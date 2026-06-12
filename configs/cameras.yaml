@@ -3,10 +3,19 @@
 cameras:
   C0:
     role: left_ear
+    image_size: [1920, 1080]
     # Fill with a 3x3 camera matrix.
-    intrinsics: null
+    intrinsics:
+      - [1348.160986640322, 0.0, 961.3325845446848]
+      - [0.0, 1355.4095530242657, 552.4958197622212]
+      - [0.0, 0.0, 1.0]
     # Fill with OpenCV distortion coefficients. Use [0, 0, 0, 0, 0] for ideal/debug cameras.
-    distortion: null
+    distortion:
+      - 0.03568585564382673
+      - -0.24155697211849755
+      - -0.004173094763460198
+      - 0.0033273098555995583
+      - 0.29004533566480734
     # Convention: T_H_C maps camera-frame points into headset frame H.
     # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
     T_H_C: null
