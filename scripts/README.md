@@ -11,6 +11,7 @@ Planned scripts:
 
 Current scripts:
 
+- `capture_dashboard.py`: local browser UI for camera preview, camera capture, IMU scan, and IMU capture.
 - `capture_imu_jsonl.py`: WT-series BLE IMU capture without GUI.
 - `list_cameras.py`: list V4L2 capture devices and supported formats.
 - `capture_quad_camera.py`: four-camera frame capture with host timestamps.

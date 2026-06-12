@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -47,7 +48,7 @@ class QuadCameraCapture:
         self.width = width
         self.height = height
 
-    def run(self, duration_s: float | None = None) -> None:
+    def run(self, duration_s: float | None = None, stop_event: threading.Event | None = None) -> None:
         try:
             import cv2
         except ImportError as exc:
@@ -72,7 +73,7 @@ class QuadCameraCapture:
         start = time.monotonic()
         group_id = 0
         try:
-            while duration_s is None or time.monotonic() - start < duration_s:
+            while (duration_s is None or time.monotonic() - start < duration_s) and not (stop_event and stop_event.is_set()):
                 for _source, cap in captures:
                     cap.grab()
 
@@ -161,4 +162,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -119,6 +119,7 @@ Verify the capture CLIs:
 ```bash
 python scripts/capture_imu_jsonl.py --help
 python scripts/capture_quad_camera.py --help
+python scripts/capture_dashboard.py --help
 ```
 
 Read the core docs:
@@ -143,6 +144,19 @@ The first target is to prove that a fixed camera/headset frame can produce a
 stable `T_H_B` wrist pose before integrating OpenVINS or MOLA.
 
 ## Data Capture Skeleton
+
+For interactive capture, start the local dashboard:
+
+```bash
+source .venv/bin/activate
+python scripts/capture_dashboard.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:8766/
+```
 
 Scan and capture WT-series BLE IMU data without the old GUI:
 
