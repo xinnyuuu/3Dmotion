@@ -1,35 +1,88 @@
 # apriltag_ring_node
 
-Purpose:
+作用：
 
 ```text
-headset camera images -> bracelet visual pose observation
+四目图片 + 手环 AprilTag -> T_H_B 视觉观测
 ```
 
-Primary output:
+这个 package 现在已经是 3DMotion 自己的实现，不依赖外部 `AprilTag/`
+项目运行。外部项目只作为算法参考。
+
+## 当前处理流程
 
 ```text
-T_H_B
+quad_camera_capture session
+  -> 读取 frames.jsonl
+  -> 逐 camera 读取图片
+  -> OpenCV AprilTag detection
+  -> solvePnP 得到 T_C_Ti
+  -> 用 T_H_Ci 转到头环坐标系
+  -> 用 T_Ti_B 转到手环中心
+  -> 同一个 group_id 内多观测加权融合
+  -> wrist_visual_pose.jsonl
 ```
 
-This package should reuse the existing `AprilTag/ring.py` logic during the
-first prototype, then become a ROS 2 node when the data path stabilizes.
+当前融合是第一版工程实现：每个 tag/camera 先独立估计 `T_H_B`，再按
+reprojection error 加权融合。后续可以替换成真正的 multi-camera joint PnP。
 
-Near-term plan:
+## 前置配置
 
-1. Read frame groups from `quad_camera_capture`.
-2. Run AprilTag detection per camera.
-3. Estimate per-camera tag poses using camera intrinsics.
-4. Transform observations into the headset frame with `T_H_Ci`.
-5. Solve one shared `T_H_B` from all visible cameras and tag corners.
+必须先填写：
 
-The existing `AprilTag` project already has useful pieces:
+```text
+configs/cameras.yaml
+configs/bracelet.yaml
+```
 
-- tag detection
-- tag pose estimation
-- regular-hex bracelet center estimation
-- target tag pose prediction from neighboring visible tags
+`configs/cameras.yaml` 需要每个 camera 的：
 
-The first integrated version can call those utilities directly before replacing
-the single-camera pose selection with a true multi-camera optimizer.
+- `intrinsics`
+- `distortion`
+- `T_H_C`
 
+`configs/bracelet.yaml` 需要：
+
+- `tag_family`
+- `tag_size_m`
+- `center_offset_m` 或 `flat_to_flat_m`
+- `tag_order`
+- 可选 `tag_to_wrist_transforms`
+
+如果 `tag_to_wrist_transforms` 为空，代码会使用正六边形 fallback 几何。
+
+## 离线处理命令
+
+先采集四目：
+
+```bash
+python scripts/capture_quad_camera.py \
+  --source C0:0 \
+  --source C1:1 \
+  --source C2:2 \
+  --source C3:3 \
+  --fps 30 \
+  --duration-s 30 \
+  --output-dir data/raw/quad_camera_test
+```
+
+再处理 AprilTag：
+
+```bash
+python scripts/process_apriltag_session.py \
+  --session-dir data/raw/quad_camera_test \
+  --cameras configs/cameras.yaml \
+  --bracelet configs/bracelet.yaml \
+  --output-dir data/processed/wrist_visual
+```
+
+输出：
+
+```text
+data/processed/wrist_visual/
+  wrist_visual_candidates.jsonl
+  wrist_visual_pose.jsonl
+```
+
+`wrist_visual_candidates.jsonl` 是每个 camera/tag 的候选观测。
+`wrist_visual_pose.jsonl` 是每个 `group_id` 融合后的 `T_H_B`。

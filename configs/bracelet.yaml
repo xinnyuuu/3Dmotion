@@ -13,7 +13,13 @@ tag_order:
   - 15
   - 14
 
-# Fill with calibrated rigid transforms from each tag frame to wristband frame.
-# Convention: T_Ti_B maps wristband-frame points into tag-frame coordinates.
-tag_to_wrist_transforms: {}
+# Fallback signs mirror the current AprilTag prototype convention:
+# local -Z points from a visible tag face into the bracelet body.
+ring_offset_sign: -1
+ring_order_direction: 1
+fallback_orientation_mode: tag_orientation
 
+# Fill with calibrated rigid transforms from each tag frame to wristband frame
+# when available. Convention: T_Ti_B maps wristband-frame points into tag-frame
+# coordinates. Each value may be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
+tag_to_wrist_transforms: {}

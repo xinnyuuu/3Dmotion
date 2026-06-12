@@ -9,3 +9,8 @@ Planned scripts:
 - trajectory export
 - calibration sanity checks
 
+Current scripts:
+
+- `capture_imu_jsonl.py`: WT-series BLE IMU capture without GUI.
+- `capture_quad_camera.py`: four-camera frame capture with host timestamps.
+- `process_apriltag_session.py`: offline AprilTag wristband pose processing from recorded camera frames.

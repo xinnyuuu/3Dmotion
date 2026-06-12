@@ -3,22 +3,37 @@
 cameras:
   C0:
     role: left_ear
+    # Fill with a 3x3 camera matrix.
     intrinsics: null
+    # Fill with OpenCV distortion coefficients. Use [0, 0, 0, 0, 0] for ideal/debug cameras.
     distortion: null
+    # Convention: T_H_C maps camera-frame points into headset frame H.
+    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
     T_H_C: null
   C1:
     role: front_left
+    # Fill with a 3x3 camera matrix.
     intrinsics: null
+    # Fill with OpenCV distortion coefficients. Use [0, 0, 0, 0, 0] for ideal/debug cameras.
     distortion: null
+    # Convention: T_H_C maps camera-frame points into headset frame H.
+    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
     T_H_C: null
   C2:
     role: front_right
+    # Fill with a 3x3 camera matrix.
     intrinsics: null
+    # Fill with OpenCV distortion coefficients. Use [0, 0, 0, 0, 0] for ideal/debug cameras.
     distortion: null
+    # Convention: T_H_C maps camera-frame points into headset frame H.
+    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
     T_H_C: null
   C3:
     role: right_ear
+    # Fill with a 3x3 camera matrix.
     intrinsics: null
+    # Fill with OpenCV distortion coefficients. Use [0, 0, 0, 0, 0] for ideal/debug cameras.
     distortion: null
+    # Convention: T_H_C maps camera-frame points into headset frame H.
+    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
     T_H_C: null
-

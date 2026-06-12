@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass
+class TagDetection:
+    tag_id: int
+    family: str
+    corners: list[list[float]]
+    center: list[float]
+    backend: str
+
+
+@dataclass
+class TagPose:
+    detection: TagDetection
+    rvec: np.ndarray
+    tvec: np.ndarray
+    reprojection_error_px: float
+
+
+class AprilTagDetector:
+    def __init__(self, family: str) -> None:
+        self.family = family.lower()
+        self.backend = "opencv-aruco"
+        self._detector = None
+        self._dictionary = None
+
+    def _ensure_detector(self):
+        if self._detector is not None or self._dictionary is not None:
+            return
+        import cv2
+
+        dictionary = _opencv_apriltag_dictionary(cv2, self.family)
+        params = cv2.aruco.DetectorParameters()
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        if hasattr(cv2.aruco, "ArucoDetector"):
+            self._detector = cv2.aruco.ArucoDetector(dictionary, params)
+        else:
+            self._dictionary = (dictionary, params)
+
+    def detect(self, image: np.ndarray) -> list[TagDetection]:
+        import cv2
+
+        self._ensure_detector()
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        if self._detector is not None:
+            corners, ids, _rejected = self._detector.detectMarkers(gray)
+        else:
+            dictionary, params = self._dictionary
+            corners, ids, _rejected = cv2.aruco.detectMarkers(gray, dictionary, parameters=params)
+        if ids is None:
+            return []
+        detections = []
+        for marker_corners, marker_id in zip(corners, ids.flatten()):
+            pts = marker_corners.reshape(4, 2).astype(float)
+            detections.append(
+                TagDetection(
+                    tag_id=int(marker_id),
+                    family=self.family,
+                    corners=pts.tolist(),
+                    center=pts.mean(axis=0).tolist(),
+                    backend=self.backend,
+                )
+            )
+        return detections
+
+
+def estimate_tag_pose(
+    detection: TagDetection,
+    tag_size_m: float,
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+) -> TagPose:
+    import cv2
+
+    object_points = tag_object_points(tag_size_m)
+    image_points = np.asarray(detection.corners, dtype=np.float64).reshape(4, 2)
+    try:
+        ok, rvecs, tvecs = cv2.solvePnPGeneric(
+            object_points,
+            image_points,
+            camera_matrix,
+            dist_coeffs,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        )[:3]
+    except cv2.error:
+        ok, rvecs, tvecs = False, [], []
+
+    candidates = []
+    if ok:
+        for rvec, tvec in zip(rvecs, tvecs):
+            rvec = np.asarray(rvec, dtype=np.float64).reshape(3, 1)
+            tvec = np.asarray(tvec, dtype=np.float64).reshape(3, 1)
+            if float(tvec[2, 0]) <= 0:
+                continue
+            candidates.append(
+                TagPose(
+                    detection=detection,
+                    rvec=rvec,
+                    tvec=tvec,
+                    reprojection_error_px=reprojection_error(object_points, image_points, rvec, tvec, camera_matrix, dist_coeffs),
+                )
+            )
+    if not candidates:
+        success, rvec, tvec = cv2.solvePnP(
+            object_points,
+            image_points,
+            camera_matrix,
+            dist_coeffs,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        )
+        if not success:
+            success, rvec, tvec = cv2.solvePnP(object_points, image_points, camera_matrix, dist_coeffs)
+        if not success:
+            raise RuntimeError(f"solvePnP failed for tag {detection.tag_id}.")
+        candidates.append(
+            TagPose(
+                detection=detection,
+                rvec=np.asarray(rvec, dtype=np.float64).reshape(3, 1),
+                tvec=np.asarray(tvec, dtype=np.float64).reshape(3, 1),
+                reprojection_error_px=reprojection_error(object_points, image_points, rvec, tvec, camera_matrix, dist_coeffs),
+            )
+        )
+    return min(candidates, key=lambda pose: pose.reprojection_error_px)
+
+
+def tag_object_points(tag_size_m: float) -> np.ndarray:
+    half = float(tag_size_m) / 2.0
+    return np.array(
+        [
+            [-half, half, 0.0],
+            [half, half, 0.0],
+            [half, -half, 0.0],
+            [-half, -half, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+
+def reprojection_error(
+    object_points: np.ndarray,
+    image_points: np.ndarray,
+    rvec: np.ndarray,
+    tvec: np.ndarray,
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+) -> float:
+    import cv2
+
+    projected, _ = cv2.projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs)
+    return float(np.linalg.norm(projected.reshape(-1, 2) - image_points, axis=1).mean())
+
+
+def _opencv_apriltag_dictionary(cv2, family: str):
+    names = {
+        "tag16h5": "DICT_APRILTAG_16h5",
+        "tag25h9": "DICT_APRILTAG_25h9",
+        "tag36h10": "DICT_APRILTAG_36h10",
+        "tag36h11": "DICT_APRILTAG_36h11",
+    }
+    if family not in names:
+        raise ValueError(f"Unsupported AprilTag family: {family}")
+    dict_id = getattr(cv2.aruco, names[family])
+    return cv2.aruco.getPredefinedDictionary(dict_id)
+

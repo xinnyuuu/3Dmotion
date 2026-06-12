@@ -169,6 +169,24 @@ python scripts/capture_quad_camera.py \
   --output-dir data/raw/quad_camera_test
 ```
 
+Process the recorded camera session into wrist AprilTag visual poses:
+
+```bash
+source .venv/bin/activate
+python scripts/process_apriltag_session.py \
+  --session-dir data/raw/quad_camera_test \
+  --cameras configs/cameras.yaml \
+  --bracelet configs/bracelet.yaml \
+  --output-dir data/processed/wrist_visual
+```
+
+This creates:
+
+```text
+data/processed/wrist_visual/wrist_visual_candidates.jsonl
+data/processed/wrist_visual/wrist_visual_pose.jsonl
+```
+
 Early timestamps are host-side timestamps:
 
 - IMU: `host_receive`
