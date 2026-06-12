@@ -1,0 +1,20 @@
+# MOLA replay placeholder.
+#
+# Use this later after ROS 2 bags exist. MOLA is planned for replay,
+# trajectory tooling, and anchor/map constraints, not the first VIO core.
+
+input:
+  type: rosbag2
+  path: data/raw/example_bag
+
+subscribe:
+  - topic: /motion/wrist/imu
+    msg_type: Imu
+    output_sensor_label: wrist_imu
+  - topic: /motion/head_pose
+    msg_type: Odometry
+    output_sensor_label: head_pose
+  - topic: /motion/wrist_pose
+    msg_type: Odometry
+    output_sensor_label: wrist_pose
+

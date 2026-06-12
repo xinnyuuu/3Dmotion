@@ -1,0 +1,10 @@
+# OpenVINS head VIO placeholder.
+#
+# Start with one camera + one IMU. Add multi-camera only after the first
+# pipeline is stable.
+
+dataset: live_or_rosbag
+camera_config: ../cameras.yaml
+imu_topic: /motion/head/imu_front
+output_pose_topic: /motion/head_pose
+

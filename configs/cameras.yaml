@@ -1,0 +1,24 @@
+# Headset camera calibration placeholder.
+
+cameras:
+  C0:
+    role: left_ear
+    intrinsics: null
+    distortion: null
+    T_H_C: null
+  C1:
+    role: front_left
+    intrinsics: null
+    distortion: null
+    T_H_C: null
+  C2:
+    role: front_right
+    intrinsics: null
+    distortion: null
+    T_H_C: null
+  C3:
+    role: right_ear
+    intrinsics: null
+    distortion: null
+    T_H_C: null
+

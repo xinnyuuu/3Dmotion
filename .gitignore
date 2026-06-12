@@ -1,0 +1,36 @@
+# Build outputs
+build/
+install/
+log/
+.colcon/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local datasets and analysis
+data/raw/*
+data/processed/*
+notebooks/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!notebooks/README.md
+
+# ROS bags and generated media
+*.db3
+*.mcap
+*.bag
+*.avi
+*.mp4
+*.mov
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
+

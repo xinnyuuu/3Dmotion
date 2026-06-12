@@ -1,0 +1,19 @@
+# Wristband geometry placeholder.
+
+tag_family: tag16h5
+tag_size_m: 0.028
+flat_to_flat_m: 0.092
+center_offset_m: 0.046
+
+tag_order:
+  - 19
+  - 16
+  - 17
+  - 18
+  - 15
+  - 14
+
+# Fill with calibrated rigid transforms from each tag frame to wristband frame.
+# Convention: T_Ti_B maps wristband-frame points into tag-frame coordinates.
+tag_to_wrist_transforms: {}
+

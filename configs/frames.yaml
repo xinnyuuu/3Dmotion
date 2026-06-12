@@ -1,0 +1,23 @@
+# Frame configuration placeholder.
+#
+# Convention:
+#   T_A_B maps points from frame B into frame A.
+#
+# Example:
+#   p_A = T_A_B * p_B
+
+world_frame: W
+head_frame: H
+wrist_frame: B
+
+transforms:
+  T_W_H:
+    source: openvins
+    status: pending
+  T_H_B:
+    source: apriltag_ring_node
+    status: pending
+  T_W_B:
+    source: composition
+    formula: "T_W_H * T_H_B"
+

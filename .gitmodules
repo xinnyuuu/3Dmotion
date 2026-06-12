@@ -1,0 +1,8 @@
+[submodule "mola"]
+	path = mola
+	url = https://github.com/MOLAorg/mola.git
+
+[submodule "open_vins"]
+	path = open_vins
+	url = https://github.com/rpng/open_vins.git
+

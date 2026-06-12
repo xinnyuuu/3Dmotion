@@ -1,0 +1,16 @@
+# Sensor topic and rate placeholder.
+
+topics:
+  head_imu_front: /motion/head/imu_front
+  head_imu_back: /motion/head/imu_back
+  wrist_imu: /motion/wrist/imu
+  head_pose: /motion/head_pose
+  wrist_visual_pose: /motion/wrist_visual_pose
+  wrist_pose: /motion/wrist_pose
+  wam_tokens: /motion/wam_tokens
+
+rates_hz:
+  cameras: 60
+  wrist_imu: 200
+  head_imu: 200
+
