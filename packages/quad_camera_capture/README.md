@@ -6,6 +6,12 @@ Purpose:
 four headset cameras -> timestamped frame groups
 ```
 
+List available V4L2 cameras first:
+
+```bash
+python scripts/list_cameras.py --configs
+```
+
 This is a first-pass OpenCV capture pipeline for cameras that are not yet
 hardware synchronized. It uses `grab()` on all cameras first, then `retrieve()`
 on each camera and records host timestamps.
@@ -46,4 +52,3 @@ Each JSONL record includes:
 
 This is good enough for early 15-30 FPS feasibility testing. For final motion
 capture, prefer hardware trigger or cameras with device timestamps.
-

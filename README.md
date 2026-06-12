@@ -128,6 +128,7 @@ cat docs/coordinate_frames.md
 cat docs/architecture.md
 cat docs/prototype_plan.md
 cat docs/timestamp_sync.md
+cat docs/camera_pipeline_comparison.md
 ```
 
 For the first feasibility test, run the existing AprilTag project outside this
@@ -159,6 +160,7 @@ Capture four camera streams at 15-30 FPS:
 
 ```bash
 source .venv/bin/activate
+python scripts/list_cameras.py --configs
 python scripts/capture_quad_camera.py \
   --source C0:0 \
   --source C1:1 \

@@ -29,11 +29,12 @@ class BraceletConfig:
 
 def load_camera_calibrations(path: Path) -> dict[str, CameraCalibration]:
     data = _load_yaml(path)
+    defaults = data.get("camera_defaults", {})
     cameras = data.get("cameras", {})
     result = {}
     for camera_id, cfg in cameras.items():
-        intrinsics = cfg.get("intrinsics")
-        distortion = cfg.get("distortion")
+        intrinsics = cfg.get("intrinsics") or defaults.get("intrinsics")
+        distortion = cfg.get("distortion") or defaults.get("distortion")
         if intrinsics is None:
             continue
         result[camera_id] = CameraCalibration(
@@ -92,4 +93,3 @@ def _resolve_center_offset(data: dict) -> float:
 def _load_yaml(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
-
