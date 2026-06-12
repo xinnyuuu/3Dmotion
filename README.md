@@ -79,6 +79,48 @@ Clone or enter the workspace:
 cd 3DMotion
 ```
 
+## Python Environment
+
+Use a local Python virtual environment for the Python-only prototype tools:
+
+- BLE IMU capture
+- quad-camera capture
+- AprilTag experiments
+- offline logs and plotting
+- early wrist ESKF prototypes
+
+ROS 2, OpenVINS, and MOLA should still use their normal system/ROS setup
+instead of being forced into this Python venv.
+
+Install the Ubuntu/Debian prerequisites if needed:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3.10-venv python3-pip
+```
+
+Create and activate the environment:
+
+```bash
+python3 -m venv --clear .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Equivalent explicit dependency install:
+
+```bash
+python -m pip install bleak opencv-contrib-python numpy pyyaml
+```
+
+Verify the capture CLIs:
+
+```bash
+python scripts/capture_imu_jsonl.py --help
+python scripts/capture_quad_camera.py --help
+```
+
 Read the core docs:
 
 ```bash
@@ -104,6 +146,7 @@ stable `T_H_B` wrist pose before integrating OpenVINS or MOLA.
 Scan and capture WT-series BLE IMU data without the old GUI:
 
 ```bash
+source .venv/bin/activate
 python scripts/capture_imu_jsonl.py --scan
 python scripts/capture_imu_jsonl.py \
   --address XX:XX:XX:XX:XX:XX \
@@ -115,6 +158,7 @@ python scripts/capture_imu_jsonl.py \
 Capture four camera streams at 15-30 FPS:
 
 ```bash
+source .venv/bin/activate
 python scripts/capture_quad_camera.py \
   --source C0:0 \
   --source C1:1 \

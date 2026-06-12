@@ -1,10 +1,15 @@
-# Data Schema
+# 数据格式
 
-The final stream follows the topology described in `Context.md`.
+最终输出格式参考 `Context.md`。建议同时保留两层数据：
 
-## JSONL Debug Format
+1. 原始记录层：IMU、图片、tag 检测、时间戳。
+2. 处理结果层：head pose、wrist pose、WAM motion stream。
 
-Each line is one timestamped state.
+原型阶段优先保证原始记录层稳定，因为它可以反复离线处理。
+
+## 最终 JSONL Debug Format
+
+每一行是一帧融合后的状态：
 
 ```json
 {
@@ -24,6 +29,14 @@ Each line is one timestamped state.
 }
 ```
 
+约定：
+
+- `pos_w`: 在 world frame `W` 下的位置，单位 meter。
+- `rot_w`: 在 world frame `W` 下的姿态 quaternion，顺序为 `[qw, qx, qy, qz]`。
+- `linear_vel_w`: world frame 下线速度。
+- `angular_vel_b`: wristband/body frame 下角速度。
+- `linear_acc_b`: wristband/body frame 下加速度，后续应使用 bias-corrected acceleration。
+
 ## Tracking State
 
 ```text
@@ -32,20 +45,86 @@ Each line is one timestamped state.
 2 = PURE_IMU
 ```
 
-## Intermediate Streams
+建议含义：
 
-Recommended intermediate logs:
+- `LOST`: 没有可信视觉，也不信任纯 IMU 外推。
+- `VISUAL_OK`: 当前有 AprilTag / VIO 等视觉约束。
+- `PURE_IMU`: 短时间视觉丢失，正在靠 IMU propagation 补帧。
+
+## 原始 IMU 记录
+
+当前 `imu_ble_bridge` 建议写 JSONL，每行一个 IMU sample：
+
+```json
+{
+  "sensor_id": "wrist_imu",
+  "timestamp_unix_ns": 1718128030045123000,
+  "timestamp_monotonic_ns": 123456789000,
+  "timestamp_source": "host_receive",
+  "accel_mps2": [0.0, 0.0, 9.8],
+  "gyro_radps": [0.0, 0.0, 0.0],
+  "euler_deg": [0.0, 0.0, 0.0],
+  "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+  "mag": null
+}
+```
+
+## 原始四目图片记录
+
+当前 `quad_camera_capture` 输出：
 
 ```text
-timestamp_us, sensor, ax, ay, az, gx, gy, gz, qw, qx, qy, qz
-timestamp_us, frame, x, y, z, qw, qx, qy, qz, covariance_hint
+data/raw/session/
+  frames.jsonl
+  C0/00000000.jpg
+  C1/00000000.jpg
+  C2/00000000.jpg
+  C3/00000000.jpg
+```
+
+`frames.jsonl` 每行一张图：
+
+```json
+{
+  "group_id": 0,
+  "camera_id": "C0",
+  "timestamp_unix_ns": 1718128030045123000,
+  "timestamp_monotonic_ns": 123456789000,
+  "timestamp_source": "host_retrieve",
+  "skew_us": 250.0,
+  "image_path": "C0/00000000.jpg",
+  "width": 1920,
+  "height": 1080
+}
+```
+
+`group_id` 表示一次四目近似同步采集组。`skew_us` 越小，四目越接近同步。
+
+## 中间处理流
+
+后续建议产生这些中间文件：
+
+```text
+wrist_visual_pose.jsonl
+head_pose.jsonl
+wrist_fused_pose.jsonl
+wam_motion.jsonl
+```
+
+字段可以先保持简单：
+
+```text
+timestamp_us, frame_id, child_frame_id, x, y, z, qw, qx, qy, qz, covariance_hint
 timestamp_us, camera_id, tag_id, corners, reprojection_error
 ```
 
-## Timestamp Rule
+## 时间戳规则
 
-Use sensor timestamps whenever possible. If unavailable, use host receive time
-and record that the timestamp source is `host_receive`.
+优先级：
 
-Never use wall-clock time inside estimation logic once replay begins.
+1. sensor/device timestamp
+2. host monotonic timestamp
+3. host unix timestamp
+
+估计算法里不要直接调用 wall-clock time。算法应该只消费数据文件或 ROS message 里的 timestamp，这样 live capture 和 offline replay 才会表现一致。
 
