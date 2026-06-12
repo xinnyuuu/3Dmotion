@@ -85,6 +85,7 @@ Read the core docs:
 cat docs/coordinate_frames.md
 cat docs/architecture.md
 cat docs/prototype_plan.md
+cat docs/timestamp_sync.md
 ```
 
 For the first feasibility test, run the existing AprilTag project outside this
@@ -97,6 +98,40 @@ python main.py --camera 0 --config config.yaml
 
 The first target is to prove that a fixed camera/headset frame can produce a
 stable `T_H_B` wrist pose before integrating OpenVINS or MOLA.
+
+## Data Capture Skeleton
+
+Scan and capture WT-series BLE IMU data without the old GUI:
+
+```bash
+python scripts/capture_imu_jsonl.py --scan
+python scripts/capture_imu_jsonl.py \
+  --address XX:XX:XX:XX:XX:XX \
+  --sensor-id wrist_imu \
+  --output data/raw/wrist_imu.jsonl \
+  --duration-s 30
+```
+
+Capture four camera streams at 15-30 FPS:
+
+```bash
+python scripts/capture_quad_camera.py \
+  --source C0:0 \
+  --source C1:1 \
+  --source C2:2 \
+  --source C3:3 \
+  --fps 30 \
+  --duration-s 30 \
+  --output-dir data/raw/quad_camera_test
+```
+
+Early timestamps are host-side timestamps:
+
+- IMU: `host_receive`
+- Camera: `host_retrieve`
+
+See `docs/timestamp_sync.md` for the sync plan and the upgrade path toward
+hardware sync.
 
 ## Development Phases
 
@@ -112,4 +147,3 @@ stable `T_H_B` wrist pose before integrating OpenVINS or MOLA.
 The `open_vins/` and `mola/` directories are upstream repositories. Keep project
 code in this repository's own `packages/`, `configs/`, `docs/`, and `ros2_ws/`
 directories unless intentionally patching upstream code.
-

@@ -1,6 +1,10 @@
 # Sensor topic and rate placeholder.
 
 topics:
+  camera_c0: /motion/head/camera/c0/image
+  camera_c1: /motion/head/camera/c1/image
+  camera_c2: /motion/head/camera/c2/image
+  camera_c3: /motion/head/camera/c3/image
   head_imu_front: /motion/head/imu_front
   head_imu_back: /motion/head/imu_back
   wrist_imu: /motion/wrist/imu
@@ -13,4 +17,3 @@ rates_hz:
   cameras: 60
   wrist_imu: 200
   head_imu: 200
-

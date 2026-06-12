@@ -8,6 +8,6 @@ Initial modules:
 - `head_vio_bridge`
 - `apriltag_ring_node`
 - `imu_ble_bridge`
+- `quad_camera_capture`
 - `wrist_eskf`
 - `wam_token_writer`
-

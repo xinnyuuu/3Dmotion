@@ -1,0 +1,36 @@
+# Live capture configuration placeholder.
+
+imu:
+  wrist:
+    sensor_id: wrist_imu
+    address: null
+    output: data/raw/wrist_imu.jsonl
+    timestamp_source: host_receive
+
+cameras:
+  target_fps: 30
+  min_expected_fps: 15
+  output_dir: data/raw/quad_camera_session
+  timestamp_source: host_retrieve
+  sources:
+    - camera_id: C0
+      source: 0
+      role: left_ear
+    - camera_id: C1
+      source: 1
+      role: front_left
+    - camera_id: C2
+      source: 2
+      role: front_right
+    - camera_id: C3
+      source: 3
+      role: right_ear
+
+sync:
+  prototype_clock: host_monotonic
+  max_camera_group_skew_us_warn: 5000
+  timestamp_fields:
+    - timestamp_monotonic_ns
+    - timestamp_unix_ns
+    - timestamp_source
+
