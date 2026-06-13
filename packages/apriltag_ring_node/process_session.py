@@ -76,7 +76,10 @@ def process_session(
                 image = cv2.imread(str(image_path))
                 if image is None:
                     continue
-                for tag_pose in _estimate_frame_tags(detector, image, bracelet, calibration):
+                frame_width = int(frame_record.get("width") or image.shape[1])
+                frame_height = int(frame_record.get("height") or image.shape[0])
+                camera_matrix = _scaled_camera_matrix(calibration, frame_width, frame_height)
+                for tag_pose in _estimate_frame_tags(detector, image, bracelet, calibration, camera_matrix):
                     if tag_pose.reprojection_error_px > max_reprojection_error_px:
                         continue
                     T_H_B = _tag_pose_to_wrist_pose(tag_pose, calibration, bracelet)
@@ -120,13 +123,30 @@ def _estimate_frame_tags(
     image: np.ndarray,
     bracelet: BraceletConfig,
     calibration: CameraCalibration,
+    camera_matrix: np.ndarray,
 ) -> list[TagPose]:
     poses = []
     for detection in detector.detect(image):
         if bracelet.tag_to_wrist and detection.tag_id not in bracelet.tag_to_wrist:
             continue
-        poses.append(estimate_tag_pose(detection, bracelet.tag_size_m, calibration.intrinsics, calibration.distortion))
+        poses.append(estimate_tag_pose(detection, bracelet.tag_size_m, camera_matrix, calibration.distortion))
     return poses
+
+
+def _scaled_camera_matrix(calibration: CameraCalibration, width: int, height: int) -> np.ndarray:
+    if calibration.image_size is None:
+        return calibration.intrinsics
+    calibration_width, calibration_height = calibration.image_size
+    if calibration_width == width and calibration_height == height:
+        return calibration.intrinsics
+    sx = width / float(calibration_width)
+    sy = height / float(calibration_height)
+    scaled = calibration.intrinsics.copy()
+    scaled[0, 0] *= sx
+    scaled[0, 2] *= sx
+    scaled[1, 1] *= sy
+    scaled[1, 2] *= sy
+    return scaled
 
 
 def _tag_pose_to_wrist_pose(
@@ -160,7 +180,7 @@ def _read_frames(path: Path) -> dict[int, list[dict]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Process recorded quad-camera frames into wrist AprilTag visual poses.")
-    parser.add_argument("--session-dir", required=True, help="Directory produced by scripts/capture_quad_camera.py")
+    parser.add_argument("--session-dir", required=True, help="Camera directory containing frames.jsonl, e.g. data/raw/session_xxx/cameras.")
     parser.add_argument("--cameras", default="configs/cameras.yaml", help="Camera calibration YAML.")
     parser.add_argument("--bracelet", default="configs/bracelet.yaml", help="Bracelet geometry YAML.")
     parser.add_argument("--output-dir", default="data/processed/wrist_visual", help="Output directory for JSONL pose files.")
@@ -178,4 +198,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

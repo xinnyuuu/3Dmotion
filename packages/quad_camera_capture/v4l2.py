@@ -44,7 +44,10 @@ def find_capture_devices() -> list[CameraDevice]:
     for path in sorted(candidates, key=_natural_video_key):
         if not os.path.exists(path):
             continue
-        device = query_capture_device(path)
+        try:
+            device = query_capture_device(path)
+        except Exception:
+            device = None
         if device is not None:
             devices.append(device)
     return devices
@@ -100,6 +103,8 @@ def get_camera_config(path: str) -> list[dict]:
                 }
             )
         return formats
+    except Exception:
+        return []
     finally:
         os.close(fd)
 
@@ -119,7 +124,7 @@ def _enum_frame_sizes(fd: int, pixfmt: int) -> list[dict]:
         if size_type != V4L2_FRMSIZE_TYPE_DISCRETE:
             continue
         width, height = struct.unpack_from("II", size_buffer, 12)
-        sizes.append({"width": width, "height": height, "fps": _enum_frame_intervals(fd, pixfmt, width, height)})
+        sizes.append({"width": width, "height": height, "label": f"{width}x{height}", "fps": _enum_frame_intervals(fd, pixfmt, width, height)})
     return sizes
 
 
@@ -154,4 +159,3 @@ def _c_string(raw: bytes) -> str:
 
 def _fourcc_from_int(value: int) -> str:
     return "".join(chr((value >> (8 * index)) & 0xFF) for index in range(4))
-

@@ -1,17 +1,17 @@
 # Wristband geometry placeholder.
 
 tag_family: tag16h5
-tag_size_m: 0.028
+tag_size_m: 0.027
 flat_to_flat_m: 0.092
 center_offset_m: 0.046
 
 tag_order:
+  - 12
   - 19
-  - 16
-  - 17
   - 18
-  - 15
-  - 14
+  - 13
+  - 6
+  - 7
 
 # Fallback signs mirror the current AprilTag prototype convention:
 # local -Z points from a visible tag face into the bracelet body.

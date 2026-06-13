@@ -75,11 +75,17 @@
 
 ```text
 data/raw/session/
-  frames.jsonl
-  C0/00000000.jpg
-  C1/00000000.jpg
-  C2/00000000.jpg
-  C3/00000000.jpg
+  session_manifest.json
+  cameras/
+    frames.jsonl
+    capture_errors.jsonl
+    C0/00000000.jpg
+    C1/00000000.jpg
+    C2/00000000.jpg
+    C3/00000000.jpg
+  imus/
+    head_imu.jsonl
+    wrist_imu.jsonl
 ```
 
 `frames.jsonl` 每行一张图：
@@ -100,11 +106,49 @@ data/raw/session/
 
 `group_id` 表示一次四目近似同步采集组。`skew_us` 越小，四目越接近同步。
 
+录制后先用诊断脚本确认实际结果：
+
+```bash
+python scripts/validate_session.py --session-dir data/raw/session_YYYYMMDD_HHMMSS
+```
+
+Dashboard 在按 Stop 后也会自动生成：
+
+```text
+data/raw/session_YYYYMMDD_HHMMSS/session_summary.json
+```
+
+重点看：
+
+- `ok_for_camera_replay`: 是否至少有可用图片和 `frames.jsonl`。
+- `camera_frame_count`: 实际写入多少张图片记录。
+- `has_capture_warnings`: 是否有部分相机打不开或失败。
+- `imu_counts`: 哪些 IMU 文件里有样本。
+
+也可以用一条命令串起验证和后处理：
+
+```bash
+python scripts/postprocess_session.py \
+  --session-dir data/raw/session_YYYYMMDD_HHMMSS \
+  --apriltag \
+  --openvins \
+  --openvins-config
+```
+
+它会生成：
+
+```text
+data/processed/session_YYYYMMDD_HHMMSS/postprocess_summary.json
+```
+
 ## 中间处理流
 
 后续建议产生这些中间文件：
 
 ```text
+openvins_session_manifest.json
+images.jsonl
+imu.jsonl
 wrist_visual_pose.jsonl
 head_pose.jsonl
 wrist_fused_pose.jsonl
@@ -118,6 +162,60 @@ timestamp_us, frame_id, child_frame_id, x, y, z, qw, qx, qy, qz, covariance_hint
 timestamp_us, camera_id, tag_id, corners, reprojection_error
 ```
 
+`prepare_openvins_session.py` 会先生成一个 ROS-free 的 OpenVINS 中间层：
+
+```text
+data/processed/openvins_session/
+  openvins_session_manifest.json
+  images.jsonl
+  imu.jsonl
+```
+
+`images.jsonl` 把录制图片映射到 OpenVINS 习惯的 topic：
+
+```json
+{
+  "topic": "/cam0/image_raw",
+  "camera_id": "C0",
+  "timestamp_unix_ns": 1718128030045123000,
+  "timestamp_monotonic_ns": 123456789000,
+  "image_path": "/abs/path/to/data/raw/session_xxx/cameras/C0/00000000.jpg",
+  "width": 1920,
+  "height": 1080
+}
+```
+
+`imu.jsonl` 把 `head_imu` 映射成 `/imu0`：
+
+```json
+{
+  "topic": "/imu0",
+  "sensor_id": "head_imu",
+  "timestamp_unix_ns": 1718128030045123000,
+  "timestamp_monotonic_ns": 123456789000,
+  "accel_mps2": [0.0, 0.0, 9.8],
+  "gyro_radps": [0.0, 0.0, 0.0]
+}
+```
+
+下一步再把这两个 JSONL 转成 rosbag2。这样 dashboard 不需要依赖 ROS2 环境，OpenVINS 也可以独立调试。
+
+`write_openvins_rosbag2.py` 会在 ROS2 环境里把这两个文件写成 rosbag2：
+
+```text
+data/processed/openvins_session/rosbag2/
+data/processed/openvins_session/rosbag2_summary.json
+```
+
+对应 ROS topic：
+
+```text
+/cam0/image_raw  sensor_msgs/msg/Image
+/imu0            sensor_msgs/msg/Imu
+```
+
+第一版只建议导出 `C0 + head_imu`。等单目 VIO 能跑通，再导出 `C0/C1` 或四目。
+
 ## 时间戳规则
 
 优先级：
@@ -127,4 +225,3 @@ timestamp_us, camera_id, tag_id, corners, reprojection_error
 3. host unix timestamp
 
 估计算法里不要直接调用 wall-clock time。算法应该只消费数据文件或 ROS message 里的 timestamp，这样 live capture 和 offline replay 才会表现一致。
-

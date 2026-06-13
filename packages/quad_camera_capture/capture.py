@@ -12,6 +12,7 @@ from pathlib import Path
 class CameraSource:
     camera_id: str
     source: int | str
+    fourcc: str | None = None
 
 
 @dataclass
@@ -38,8 +39,10 @@ class QuadCameraCapture:
         width: int | None = None,
         height: int | None = None,
     ) -> None:
-        if len(sources) != 4:
-            raise ValueError("QuadCameraCapture expects exactly four sources.")
+        if not sources:
+            raise ValueError("QuadCameraCapture expects at least one source.")
+        if len(sources) > 4:
+            raise ValueError("QuadCameraCapture supports at most four sources.")
         if target_fps <= 0:
             raise ValueError("target_fps must be positive.")
         self.sources = sources
@@ -56,17 +59,29 @@ class QuadCameraCapture:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = self.output_dir / "frames.jsonl"
+        errors_path = self.output_dir / "capture_errors.jsonl"
         captures = []
+        open_errors = []
         for source in self.sources:
-            cap = cv2.VideoCapture(source.source)
+            cap = cv2.VideoCapture(source.source, cv2.CAP_V4L2)
+            if source.fourcc:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*source.fourcc[:4]))
             if not cap.isOpened():
-                raise RuntimeError(f"Could not open camera {source.camera_id}: {source.source}")
+                cap.release()
+                open_errors.append({"camera_id": source.camera_id, "source": str(source.source), "error": "open_failed"})
+                continue
             if self.width is not None:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             if self.height is not None:
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             cap.set(cv2.CAP_PROP_FPS, self.target_fps)
             captures.append((source, cap))
+        if open_errors:
+            with errors_path.open("a", encoding="utf-8") as f:
+                for error in open_errors:
+                    f.write(json.dumps(error, separators=(",", ":")) + "\n")
+        if not captures:
+            raise RuntimeError(f"Could not open any camera sources. Errors: {open_errors}")
 
         frame_period = 1.0 / self.target_fps
         next_frame_time = time.monotonic()
@@ -94,7 +109,23 @@ class QuadCameraCapture:
                         camera_dir.mkdir(parents=True, exist_ok=True)
                         image_name = f"{group_id:08d}.jpg"
                         image_path = camera_dir / image_name
-                        cv2.imwrite(str(image_path), frame)
+                        temp_image_path = camera_dir / f".{image_name}.tmp.jpg"
+                        if not cv2.imwrite(str(temp_image_path), frame):
+                            with errors_path.open("a", encoding="utf-8") as f:
+                                f.write(
+                                    json.dumps(
+                                        {
+                                            "camera_id": source.camera_id,
+                                            "source": str(source.source),
+                                            "error": "write_failed",
+                                            "image_path": str(image_path.relative_to(self.output_dir)),
+                                        },
+                                        separators=(",", ":"),
+                                    )
+                                    + "\n"
+                                )
+                            continue
+                        temp_image_path.replace(image_path)
                         height, width = frame.shape[:2]
                         records.append(
                             FrameRecord(
@@ -109,10 +140,11 @@ class QuadCameraCapture:
                                 height=height,
                             )
                         )
-                    with manifest_path.open("a", encoding="utf-8") as f:
-                        for record in records:
-                            f.write(json.dumps(asdict(record), separators=(",", ":")) + "\n")
-                    group_id += 1
+                    if records:
+                        with manifest_path.open("a", encoding="utf-8") as f:
+                            for record in records:
+                                f.write(json.dumps(asdict(record), separators=(",", ":")) + "\n")
+                        group_id += 1
 
                 next_frame_time += frame_period
                 sleep_s = next_frame_time - time.monotonic()

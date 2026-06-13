@@ -60,27 +60,47 @@ configs/frames.yaml
 
 ## Head IMU-to-Head Extrinsics
 
-头环 IMU 也要标定到 `H`：
+当前硬件里只有一个头环 IMU，项目里统一叫：
 
 ```text
-T_H_IMU_FRONT
-T_H_IMU_BACK
+head_imu
 ```
 
-第一版 OpenVINS 原型建议先用一个 IMU 跑通：
+建议把它的坐标系记为 `I_H`，也就是 head IMU frame。最终要标定它到头环刚体中心 `H` 的外参：
 
 ```text
-one camera + one IMU -> T_W_H
+T_H_IH
 ```
 
-等单 IMU VIO 稳定后，再加 dual-IMU 逻辑。不要一开始就把 dual-IMU、四目、手环融合全部混在一起，那会很难定位问题。
+P3a 快速原型阶段可以先不求真实头环中心，直接令：
+
+```text
+H := I_H
+T_W_H := T_W_IH
+```
+
+也就是说，OpenVINS 输出的 body pose 先当作 head pose 使用。等 `C0 + head_imu` 稳定后，再测真实 `T_H_IH`，把 IMU frame 转到头环中心 frame。
+
+第一版 OpenVINS 只接：
+
+```text
+one camera + head_imu -> T_W_IH
+```
+
+手环 IMU 不接入 P3a；它属于后续 wrist ESKF / wrist motion pipeline。`Dual_IMU` 项目只作为 BLE 数据抓取和解析协议参考，不代表本项目有两个头环 IMU。
 
 ## Wrist IMU-to-Wristband Extrinsics
 
-手环 IMU 需要标定到手环刚体中心 `B`：
+手环上也只有一个 IMU，项目里统一叫：
 
 ```text
-T_B_IMU_WRIST
+wrist_imu
+```
+
+建议把它的坐标系记为 `I_B`，也就是 wrist IMU frame。它需要标定到手环刚体中心 `B`：
+
+```text
+T_B_IB
 ```
 
 这个外参决定了：
@@ -147,4 +167,3 @@ gyro magnitude peak
 ```
 
 如果条件允许，最终版本最好上 hardware trigger 或 device timestamp。
-

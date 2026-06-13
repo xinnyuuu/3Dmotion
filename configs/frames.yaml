@@ -9,10 +9,19 @@
 world_frame: W
 head_frame: H
 wrist_frame: B
+head_imu_frame: I_H
+wrist_imu_frame: I_B
 
 transforms:
   T_W_H:
     source: openvins
+    status: pending
+  T_H_IH:
+    source: head_imu_to_head_calibration
+    status: pending
+    note: "P3a may temporarily use H := I_H before this extrinsic is measured."
+  T_B_IB:
+    source: wrist_imu_to_wristband_calibration
     status: pending
   T_H_B:
     source: apriltag_ring_node
@@ -20,4 +29,3 @@ transforms:
   T_W_B:
     source: composition
     formula: "T_W_H * T_H_B"
-

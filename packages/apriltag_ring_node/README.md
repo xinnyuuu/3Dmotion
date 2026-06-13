@@ -6,8 +6,8 @@
 四目图片 + 手环 AprilTag -> T_H_B 视觉观测
 ```
 
-这个 package 现在已经是 3DMotion 自己的实现，不依赖外部 `AprilTag/`
-项目运行。外部项目只作为算法参考。
+参考项目`AprilTag/`：https://github.com/Leowang980/AprilTag
+
 
 ## 当前处理流程
 

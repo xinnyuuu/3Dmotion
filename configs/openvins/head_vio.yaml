@@ -5,6 +5,5 @@
 
 dataset: live_or_rosbag
 camera_config: ../cameras.yaml
-imu_topic: /motion/head/imu_front
+imu_topic: /motion/head/imu
 output_pose_topic: /motion/head_pose
-

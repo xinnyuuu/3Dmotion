@@ -32,3 +32,10 @@ http://127.0.0.1:8766/
 - Dashboard 只是采集层工具，不做 AprilTag / OpenVINS / ESKF 处理。
 - 离线处理仍使用 `scripts/process_apriltag_session.py`。
 
+Recording preview note:
+
+- Idle preview uses direct `/stream` camera access.
+- During Record, the UI previews the latest JPEG already written under the
+  active session's `cameras/C*/` directory.
+- This avoids opening the same V4L2 camera twice and makes the preview reflect
+  what is actually being saved.

@@ -12,6 +12,19 @@ List available V4L2 cameras first:
 python scripts/list_cameras.py --configs
 ```
 
+Probe a selected source before a full capture:
+
+```bash
+python scripts/check_camera_capture.py \
+  --source C0:/dev/video0 \
+  --format MJPG \
+  --width 1280 \
+  --height 720 \
+  --fps 15
+```
+
+The probe writes one image plus `camera_preflight_summary.json`.
+
 This is a first-pass OpenCV capture pipeline for cameras that are not yet
 hardware synchronized. It uses `grab()` on all cameras first, then `retrieve()`
 on each camera and records host timestamps.

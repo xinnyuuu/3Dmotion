@@ -7,7 +7,8 @@ WT-series BLE IMU packets -> timestamped IMU stream
 ```
 
 This package should reuse the existing `Dual_IMU/device_model.py` parser during
-the first prototype.
+the first prototype. `Dual_IMU` is only the reference project name here; the
+current 3DMotion hardware has two IMU roles total: `head_imu` and `wrist_imu`.
 
 Current skeleton implementation:
 
@@ -34,4 +35,3 @@ python scripts/capture_imu_jsonl.py \
 
 The current timestamp source is `host_receive`. If the IMU can expose device
 timestamps later, add them and keep host receive time as a latency/debug field.
-

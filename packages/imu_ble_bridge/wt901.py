@@ -95,11 +95,18 @@ class WT901BleClient:
     READ_UUID = "0000ffe4-0000-1000-8000-00805f9a34fb"
     WRITE_UUID = "0000ffe9-0000-1000-8000-00805f9a34fb"
 
-    def __init__(self, address: str, sensor_id: str, on_sample: Callable[[ImuSample], None]) -> None:
+    def __init__(
+        self,
+        address: str,
+        sensor_id: str,
+        on_sample: Callable[[ImuSample], None],
+        on_connected: Callable[[], None] | None = None,
+    ) -> None:
         self.address = address
         self.sensor_id = sensor_id
         self.parser = WT901PacketParser(sensor_id, on_sample)
         self._write_uuid: str | None = None
+        self.on_connected = on_connected
 
     async def run(self, duration_s: float | None = None) -> None:
         try:
@@ -111,6 +118,8 @@ class WT901BleClient:
         async with BleakClient(self.address, timeout=15) as client:
             self._write_uuid = self.WRITE_UUID
             await client.start_notify(self.READ_UUID, lambda _sender, data: self.parser.feed(bytes(data)))
+            if self.on_connected is not None:
+                self.on_connected()
             poll_task = asyncio.create_task(self._poll_aux_registers(client))
             try:
                 while duration_s is None or time.monotonic() - start < duration_s:
@@ -133,13 +142,32 @@ async def scan_wt_devices(timeout_s: float = 8.0) -> list[tuple[str, str]]:
     except ImportError as exc:
         raise RuntimeError("Install bleak to scan BLE IMU devices: pip install bleak") from exc
 
-    devices = await BleakScanner.discover(timeout=timeout_s)
-    results = []
-    for device in devices:
-        name = device.name or "Unknown"
-        if "WT" in name.upper():
-            results.append((name, device.address))
-    return sorted(results)
+    found: dict[str, tuple[str, str]] = {}
+
+    def remember(device, advertisement_data=None) -> None:
+        local_name = getattr(advertisement_data, "local_name", None)
+        name = local_name or device.name or "Unknown"
+        service_uuids = [str(uuid).lower() for uuid in (getattr(advertisement_data, "service_uuids", None) or [])]
+        haystack = " ".join([name, *service_uuids]).upper()
+        # WT901 devices usually advertise a WT* name. Some Linux/BlueZ scans
+        # report only service UUIDs for one of two identical devices, so also
+        # accept the common FFE* service family used by the sensor.
+        if "WT" in haystack or any("ffe" in uuid for uuid in service_uuids):
+            found[device.address] = (name, device.address)
+
+    try:
+        scanner = BleakScanner(detection_callback=remember)
+        await scanner.start()
+        await asyncio.sleep(timeout_s)
+        await scanner.stop()
+        for device in getattr(scanner, "discovered_devices", []):
+            remember(device)
+    except TypeError:
+        # Older bleak versions may not accept detection_callback in the
+        # constructor. Fall back to discover(), still de-duplicating by address.
+        for device in await BleakScanner.discover(timeout=timeout_s):
+            remember(device)
+    return sorted(found.values(), key=lambda item: (item[0].upper(), item[1]))
 
 
 def write_jsonl_sample(path: Path, sample: ImuSample) -> None:
@@ -180,4 +208,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

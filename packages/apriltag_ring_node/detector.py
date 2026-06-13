@@ -35,7 +35,10 @@ class AprilTagDetector:
         import cv2
 
         dictionary = _opencv_apriltag_dictionary(cv2, self.family)
-        params = cv2.aruco.DetectorParameters()
+        if hasattr(cv2.aruco, "DetectorParameters"):
+            params = cv2.aruco.DetectorParameters()
+        else:
+            params = cv2.aruco.DetectorParameters_create()
         params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
         if hasattr(cv2.aruco, "ArucoDetector"):
             self._detector = cv2.aruco.ArucoDetector(dictionary, params)
@@ -166,4 +169,3 @@ def _opencv_apriltag_dictionary(cv2, family: str):
         raise ValueError(f"Unsupported AprilTag family: {family}")
     dict_id = getattr(cv2.aruco, names[family])
     return cv2.aruco.getPredefinedDictionary(dict_id)
-

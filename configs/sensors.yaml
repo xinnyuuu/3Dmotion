@@ -5,15 +5,24 @@ topics:
   camera_c1: /motion/head/camera/c1/image
   camera_c2: /motion/head/camera/c2/image
   camera_c3: /motion/head/camera/c3/image
-  head_imu_front: /motion/head/imu_front
-  head_imu_back: /motion/head/imu_back
+  head_imu: /motion/head/imu
   wrist_imu: /motion/wrist/imu
   head_pose: /motion/head_pose
   wrist_visual_pose: /motion/wrist_visual_pose
   wrist_pose: /motion/wrist_pose
   wam_tokens: /motion/wam_tokens
 
+imus:
+  head_imu:
+    frame: I_H
+    mount: headset_rigid_body
+    role: head_vio
+  wrist_imu:
+    frame: I_B
+    mount: wristband_rigid_body
+    role: wrist_motion
+
 rates_hz:
   cameras: 60
-  wrist_imu: 200
   head_imu: 200
+  wrist_imu: 200

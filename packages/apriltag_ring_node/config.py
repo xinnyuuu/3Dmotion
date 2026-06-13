@@ -12,6 +12,7 @@ from .geometry import RigidTransform, parse_transform, rotation_y
 @dataclass
 class CameraCalibration:
     camera_id: str
+    image_size: tuple[int, int] | None
     intrinsics: np.ndarray
     distortion: np.ndarray
     T_H_C: RigidTransform
@@ -35,10 +36,12 @@ def load_camera_calibrations(path: Path) -> dict[str, CameraCalibration]:
     for camera_id, cfg in cameras.items():
         intrinsics = cfg.get("intrinsics") or defaults.get("intrinsics")
         distortion = cfg.get("distortion") or defaults.get("distortion")
+        image_size = cfg.get("image_size") or defaults.get("image_size")
         if intrinsics is None:
             continue
         result[camera_id] = CameraCalibration(
             camera_id=camera_id,
+            image_size=tuple(int(v) for v in image_size) if image_size is not None else None,
             intrinsics=np.asarray(intrinsics, dtype=np.float64).reshape(3, 3),
             distortion=np.asarray(distortion if distortion is not None else [0, 0, 0, 0, 0], dtype=np.float64).reshape(-1, 1),
             T_H_C=parse_transform(cfg.get("T_H_C"), default=RigidTransform.identity()),
