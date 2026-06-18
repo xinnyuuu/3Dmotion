@@ -1,20 +1,22 @@
 # Headset camera calibration.
 #
-# Four cameras currently share the same intrinsics/distortion. Per-camera
-# entries may override these defaults later if calibration shows differences.
+# Placeholder schema. Replace these placeholder intrinsics with
+# FourHeadIntrinsics/scripts/export_3dmotion_cameras_yaml.py after calibrating
+# the exact recording resolution.
 
 camera_defaults:
-  image_size: [1920, 1080]
+  image_size: [1600, 1200]
+  camera_model: fisheye
+  distortion_model: equidistant
   intrinsics:
-    - [1395.67977407088, 0.0, 961.846316575729]
-    - [0.0, 1394.4219378913047, 519.407320308343]
+    - [800.0, 0.0, 800.0]
+    - [0.0, 800.0, 600.0]
     - [0.0, 0.0, 1.0]
   distortion:
-    - 0.01312118060792128
-    - -0.10159855102499989
-    - -0.0007627935251426124
-    - 0.0001588212560533957
-    - 0.0440660655430788
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
 
 cameras:
   C0:

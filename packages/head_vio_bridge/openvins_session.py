@@ -127,7 +127,15 @@ def prepare_openvins_session(
     return summary
 
 
-def write_openvins_rosbag2(prepared_dir: Path, bag_dir: Path, frame_id: str = "headset") -> dict:
+def write_openvins_rosbag2(
+    prepared_dir: Path,
+    bag_dir: Path,
+    frame_id: str = "headset",
+    *,
+    max_duration_s: float | None = None,
+    start_offset_s: float = 0.0,
+    image_stride: int = 1,
+) -> dict:
     """Write prepared OpenVINS JSONL streams to a rosbag2 directory.
 
     This function requires a sourced ROS2 Python environment. It is imported
@@ -159,6 +167,17 @@ def write_openvins_rosbag2(prepared_dir: Path, bag_dir: Path, frame_id: str = "h
         raise RuntimeError(f"No image records in {images_path}")
     if not imu_records:
         raise RuntimeError(f"No IMU records in {imu_path}")
+    image_records, imu_records, filter_summary = _filter_rosbag_records(
+        image_records,
+        imu_records,
+        max_duration_s=max_duration_s,
+        start_offset_s=start_offset_s,
+        image_stride=image_stride,
+    )
+    if not image_records:
+        raise RuntimeError("No image records remain after rosbag2 export filters")
+    if not imu_records:
+        raise RuntimeError("No IMU records remain after rosbag2 export filters")
 
     bag_dir.parent.mkdir(parents=True, exist_ok=True)
     writer = rosbag2_py.SequentialWriter()
@@ -206,10 +225,65 @@ def write_openvins_rosbag2(prepared_dir: Path, bag_dir: Path, frame_id: str = "h
             "images": written_images,
             "imu_samples": written_imu,
         },
+        "filters": filter_summary,
     }
     summary_path = bag_dir.with_name(f"{bag_dir.name}_summary.json")
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
+
+
+def _filter_rosbag_records(
+    image_records: list[dict],
+    imu_records: list[dict],
+    *,
+    max_duration_s: float | None,
+    start_offset_s: float,
+    image_stride: int,
+) -> tuple[list[dict], list[dict], dict]:
+    if image_stride < 1:
+        raise ValueError("--image-stride must be >= 1")
+    if start_offset_s < 0:
+        raise ValueError("--start-offset-s must be >= 0")
+    if max_duration_s is not None and max_duration_s <= 0:
+        raise ValueError("--max-duration-s must be > 0")
+
+    first_timestamp_ns = min(int(record["timestamp_unix_ns"]) for record in image_records)
+    start_ns = first_timestamp_ns + int(start_offset_s * 1_000_000_000)
+    end_ns = None if max_duration_s is None else start_ns + int(max_duration_s * 1_000_000_000)
+
+    def in_window(record: dict) -> bool:
+        timestamp_ns = int(record["timestamp_unix_ns"])
+        if timestamp_ns < start_ns:
+            return False
+        if end_ns is not None and timestamp_ns > end_ns:
+            return False
+        return True
+
+    windowed_images = [record for record in image_records if in_window(record)]
+    windowed_imu = [record for record in imu_records if in_window(record)]
+    strided_images = [record for index, record in enumerate(windowed_images) if index % image_stride == 0]
+
+    return (
+        strided_images,
+        windowed_imu,
+        {
+            "start_offset_s": start_offset_s,
+            "max_duration_s": max_duration_s,
+            "image_stride": image_stride,
+            "input_counts": {
+                "images": len(image_records),
+                "imu_samples": len(imu_records),
+            },
+            "window_counts": {
+                "images": len(windowed_images),
+                "imu_samples": len(windowed_imu),
+            },
+            "output_counts": {
+                "images": len(strided_images),
+                "imu_samples": len(windowed_imu),
+            },
+        },
+    )
 
 
 def _resolve_cameras_dir(session_dir: Path) -> Path:

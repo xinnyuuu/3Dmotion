@@ -10,6 +10,8 @@
 
 下面每个阶段都应该能独立验证。
 
+具体命令和日常操作流程见 `system_workflow.md`。这里只记录阶段目标、验收标准和还没实现的工程骨架。
+
 ## P0: 只做手环视觉位姿
 
 目标：
@@ -129,21 +131,7 @@ T_W_H = T_W_I * T_I_H
 4. 第一版建议只用 `C0 + head_imu`，先验证时间戳、重力方向和 scale。
 5. 单目+IMU 稳定后，再接四目/多相机外参。
 
-当前 P3a 离线命令：
-
-```bash
-python scripts/check_head_vio_readiness.py \
-  --session-dir data/raw/session_YYYYMMDD_HHMMSS
-```
-
-通过后准备 OpenVINS 输入和单目配置：
-
-```bash
-python scripts/prepare_p3_head_vio.py \
-  --session-dir data/raw/session_YYYYMMDD_HHMMSS
-```
-
-这会生成：
+当前 P3a 离线工具链会生成：
 
 ```text
 data/processed/session_YYYYMMDD_HHMMSS/openvins_c0/
@@ -155,16 +143,6 @@ data/processed/session_YYYYMMDD_HHMMSS/openvins_c0/
     estimator_config.yaml
     kalibr_imu_chain.yaml
     kalibr_imucam_chain.yaml
-```
-
-在 ROS2 环境下再转成 rosbag2：
-
-```bash
-source /opt/ros/humble/setup.bash
-python scripts/write_openvins_rosbag2.py \
-  --prepared-dir data/processed/session_YYYYMMDD_HHMMSS/openvins_c0 \
-  --bag-dir data/processed/session_YYYYMMDD_HHMMSS/openvins_c0/rosbag2 \
-  --frame-id head_imu
 ```
 
 这里的关键是：OpenVINS 解决的是 `T_W_H`，也就是头环/头部在 world frame 下的位姿。它不直接解决手腕 AprilTag ground truth。
@@ -201,7 +179,7 @@ T_W_B = T_W_H * T_H_B
 - 它能作为 wrist IMU 的 visual correction / ground truth。
 - 它可以用当前 camera session 直接反复处理，方便调 tag size、bracelet geometry、reprojection error 阈值。
 
-推荐下一步：
+推荐下一步骨架：
 
 1. 先确保 record session 能稳定产生：
    ```text
@@ -212,13 +190,7 @@ T_W_B = T_W_H * T_H_B
      imus/wrist_imu.jsonl
      session_manifest.json
    ```
-2. 跑 AprilTag 离线处理：
-   ```bash
-   python scripts/process_apriltag_session.py \
-     --session-dir data/raw/session_xxx/cameras \
-     --cameras configs/cameras.yaml \
-     --bracelet configs/bracelet.yaml
-   ```
+2. 跑 AprilTag 离线处理。
 3. 检查输出的 wrist visual pose 是否稳定。
 4. 再把 wrist IMU 和 wrist visual pose 对齐，进入 P2 ESKF。
 5. OpenVINS 放在后面接 head pose：`T_W_H` 稳定后，再组合：

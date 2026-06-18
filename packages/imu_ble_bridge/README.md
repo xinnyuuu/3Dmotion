@@ -1,37 +1,41 @@
 # imu_ble_bridge
 
-Purpose:
+WT BLE IMU 数据采集模块。完整采集流程见 `../../docs/system_workflow.md`。
+
+## 职责
 
 ```text
 WT-series BLE IMU packets -> timestamped IMU stream
 ```
 
-This package should reuse the existing `Dual_IMU/device_model.py` parser during
-the first prototype. `Dual_IMU` is only the reference project name here; the
-current 3DMotion hardware has two IMU roles total: `head_imu` and `wrist_imu`.
+`Dual_IMU` 只是外部参考项目名。当前 3DMotion 硬件只有两个 IMU 角色：
 
-Current skeleton implementation:
-
-- no GUI
-- scans WT BLE devices
-- captures acceleration, gyroscope, Euler angles, optional quaternion, optional magnetometer
-- writes JSONL with both Unix and monotonic host receive timestamps
-
-Scan:
-
-```bash
-python scripts/capture_imu_jsonl.py --scan
+```text
+head_imu
+wrist_imu
 ```
 
-Capture:
+## 当前输出
+
+- acceleration
+- gyroscope
+- Euler angle
+- optional quaternion
+- optional magnetometer
+- `timestamp_monotonic_ns`
+- `timestamp_unix_ns`
+- `timestamp_source = host_receive`
+
+## 扫描排查
+
+`--scan` 只返回看起来像 WT IMU 的设备。若扫不到，先用 `--scan-all` 检查系统是否能看到任何 BLE 广播：
 
 ```bash
-python scripts/capture_imu_jsonl.py \
-  --address XX:XX:XX:XX:XX:XX \
-  --sensor-id wrist_imu \
-  --output data/raw/wrist_imu.jsonl \
-  --duration-s 30
+python scripts/capture_imu_jsonl.py --scan-all --scan-timeout-s 12
 ```
 
-The current timestamp source is `host_receive`. If the IMU can expose device
-timestamps later, add them and keep host receive time as a latency/debug field.
+## 后续骨架
+
+- 如果 IMU 支持 device timestamp，加入 `timestamp_device_ns`。
+- 估计 BLE latency / jitter。
+- 输出 ROS2 `sensor_msgs/msg/Imu` live bridge。

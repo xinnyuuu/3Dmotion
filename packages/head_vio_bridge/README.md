@@ -1,126 +1,46 @@
 # head_vio_bridge
 
-Purpose:
+OpenVINS head VIO 适配模块。完整 P3a 操作流程见 `../../docs/system_workflow.md`。
+
+## 职责
 
 ```text
-OpenVINS output -> project head pose stream
+C0 + head_imu -> OpenVINS inputs / rosbag2 -> T_W_H
 ```
 
-Primary output:
+当前实现覆盖：
 
-```text
-T_W_H
-```
+- P3a readiness check。
+- dashboard session 到 OpenVINS JSONL 中间层的转换。
+- 第一版 OpenVINS config 生成。
+- ROS2 环境下的 rosbag2 导出。
 
-The current implementation covers P3a readiness checks, offline session
-conversion, first-pass OpenVINS config generation, and rosbag2 export.
+## Frame 约定
 
-## P3a Frame Convention
-
-The first head VIO prototype deliberately uses one camera and one IMU:
+P3a 只用一个 camera 和一个刚性固定的 head IMU：
 
 ```text
 C0 + head_imu -> T_W_H
 ```
 
-`head_imu` must be rigidly fixed to the headset/camera rig. OpenVINS assumes
-the camera and IMU belong to one rigid body.
-
-For P3a:
+临时约定：
 
 ```text
-I = head_imu frame
-H := I
-T_W_H := T_W_I
+I_H = head_imu frame
+H := I_H
+T_W_H := T_W_IH
 ```
 
-After IMU-to-head calibration, replace the temporary convention with:
+后续测出 IMU-to-head 外参后：
 
 ```text
-T_W_H = T_W_I * T_I_H
+T_W_H = T_W_IH * T_IH_H
 ```
 
-## Current Prototype Entry
+`head_imu` 必须固定在头环/相机刚体上。OpenVINS 默认 camera 和 IMU 属于同一个 rigid body。
 
-Check that one recorded session is ready for P3a:
+## 后续骨架
 
-```bash
-python scripts/check_head_vio_readiness.py \
-  --session-dir data/raw/session_YYYYMMDD_HHMMSS
-```
-
-Prepare the OpenVINS JSONL streams and first-pass config:
-
-```bash
-python scripts/prepare_p3_head_vio.py \
-  --session-dir data/raw/session_YYYYMMDD_HHMMSS
-```
-
-This writes:
-
-```text
-data/processed/session_YYYYMMDD_HHMMSS/openvins_c0/
-  images.jsonl
-  imu.jsonl
-  openvins_session_manifest.json
-  p3_head_vio_summary.json
-  config/
-```
-
-The lower-level ROS-free exporter is still available:
-
-```bash
-python scripts/prepare_openvins_session.py \
-  --session-dir data/raw/session_YYYYMMDD_HHMMSS \
-  --camera-id C0 \
-  --imu-slot head_imu \
-  --output-dir data/processed/openvins_session
-```
-
-It checks that the recorded camera frames and head IMU stream exist, then maps
-them to the first OpenVINS topic plan:
-
-```text
-C0 -> /cam0/image_raw
-head_imu -> /imu0
-```
-
-The next bridge step is a rosbag2 writer that publishes these records as
-`sensor_msgs/msg/Image` and `sensor_msgs/msg/Imu`.
-
-That writer now exists, but it must be run from a ROS2 Python environment:
-
-```bash
-source /opt/ros/humble/setup.bash
-python scripts/write_openvins_rosbag2.py \
-  --prepared-dir data/processed/openvins_session \
-  --bag-dir data/processed/openvins_session/rosbag2
-```
-
-This produces:
-
-```text
-/cam0/image_raw  sensor_msgs/msg/Image
-/imu0            sensor_msgs/msg/Imu
-```
-
-OpenVINS should be launched separately against a matching estimator config.
-Keep the first test monocular with `max_cameras:=1` and `use_stereo:=false`.
-
-Generate the first-pass config from current camera calibration:
-
-```bash
-python scripts/generate_openvins_config.py \
-  --cameras configs/cameras.yaml \
-  --camera-id C0 \
-  --output-dir configs/openvins/generated_head_vio
-```
-
-The generated `kalibr_imucam_chain.yaml` uses:
-
-```text
-T_imu_cam = T_H_C
-```
-
-That assumes the headset frame `H` is currently standing in for the head IMU
-frame. It is enough to wire the pipeline, but not enough for final accuracy.
+- P3b: 用 Kalibr 或固定标定板测正式 `T_imu_cam` 和 time offset。
+- P3c: 从 `C0` 扩展到 `C0+C1`，再扩展到四目。
+- P4: 把 `T_W_H` 与 AprilTag wrist pose 组合成 `T_W_B`。

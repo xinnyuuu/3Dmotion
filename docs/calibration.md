@@ -17,7 +17,35 @@
 configs/cameras.yaml
 ```
 
-注意：四个摄像头即使型号一样，也不要假设 intrinsics 完全相同。
+当前四路头环镜头按超广角/全向相机处理。最终主线优先使用 Kalibr + AprilGrid，并比较：
+
+```text
+ds-none
+eucm-none
+omni-radtan
+```
+
+OpenCV fisheye 只作为当前 3D Motion 原型链路的 fallback。FourHeadIntrinsics 的 OpenCV fallback 导入到本项目时写成 OpenVINS/Kalibr 兼容的：
+
+```text
+camera_model: fisheye
+distortion_model: equidistant
+distortion: [k1, k2, k3, k4]
+```
+
+当前离线主线 session 对应的标定档位是：
+
+```text
+MJPG 1600x1200 @ 25fps
+```
+
+注意：
+
+- 四个摄像头即使型号一样，也不要假设 intrinsics 完全相同。
+- 内参必须和真实录制 resolution 一致；从 1600x1200 切到 1920x1080、800x600、1:1 方形传感器后都要重新标定。
+- OpenCV fallback 的 `configs/cameras.yaml` 应由 `FourHeadIntrinsics/scripts/export_3dmotion_cameras_yaml.py` 从 `four_camera_intrinsics.yaml` 生成，避免手抄模型名或畸变参数。
+- Kalibr `camchain.yaml` 可用 `FourHeadIntrinsics/scripts/import_kalibr_camchain_to_3dmotion.py` 导入并保存 DS/EUCM/omni 参数；当前 AprilTag/OpenVINS 代码不会把这些模型静默当 pinhole 使用。
+- 在 `T_H_C` 外参没有标定前，AprilTag 可以先做单相机诊断，但多相机融合位姿不能当最终结果。
 
 ## Camera-to-Head Extrinsics
 

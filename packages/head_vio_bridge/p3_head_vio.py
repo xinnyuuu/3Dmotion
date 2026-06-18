@@ -91,6 +91,7 @@ def prepare_p3_head_vio(
     output_dir: Path | None = None,
     config_dir: Path | None = None,
     cameras_path: Path = Path("configs/cameras.yaml"),
+    template_config_dir: Path | None = Path("open_vins/config/euroc_mav"),
     camera_id: str = "C0",
     imu_slot: str = "head_imu",
     fail_on_not_ready: bool = True,
@@ -122,6 +123,7 @@ def prepare_p3_head_vio(
         cameras_path=cameras_path,
         output_dir=config_dir,
         camera_ids=[camera_id],
+        template_config_dir=template_config_dir,
     )
 
     summary = {
@@ -395,6 +397,7 @@ def prepare_main() -> None:
     parser.add_argument("--output-dir", help="Default: data/processed/<session_name>/openvins_c0")
     parser.add_argument("--config-dir", help="Default: <output-dir>/config")
     parser.add_argument("--cameras", default="configs/cameras.yaml")
+    parser.add_argument("--template-config-dir", default="open_vins/config/euroc_mav", help="OpenVINS template config directory used for estimator_config.yaml.")
     parser.add_argument("--camera-id", default="C0")
     parser.add_argument("--imu-slot", default="head_imu")
     parser.add_argument("--allow-not-ready", action="store_true")
@@ -405,6 +408,7 @@ def prepare_main() -> None:
         output_dir=Path(args.output_dir) if args.output_dir else None,
         config_dir=Path(args.config_dir) if args.config_dir else None,
         cameras_path=Path(args.cameras),
+        template_config_dir=Path(args.template_config_dir) if args.template_config_dir else None,
         camera_id=args.camera_id,
         imu_slot=args.imu_slot,
         fail_on_not_ready=not args.allow_not_ready,

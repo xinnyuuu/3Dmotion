@@ -77,17 +77,24 @@ def estimate_tag_pose(
     tag_size_m: float,
     camera_matrix: np.ndarray,
     dist_coeffs: np.ndarray,
+    distortion_model: str = "radtan",
 ) -> TagPose:
     import cv2
 
     object_points = tag_object_points(tag_size_m)
     image_points = np.asarray(detection.corners, dtype=np.float64).reshape(4, 2)
+    pnp_image_points, pnp_dist_coeffs = _pnp_points_and_distortion(
+        image_points,
+        camera_matrix,
+        dist_coeffs,
+        distortion_model,
+    )
     try:
         ok, rvecs, tvecs = cv2.solvePnPGeneric(
             object_points,
-            image_points,
+            pnp_image_points,
             camera_matrix,
-            dist_coeffs,
+            pnp_dist_coeffs,
             flags=cv2.SOLVEPNP_IPPE_SQUARE,
         )[:3]
     except cv2.error:
@@ -105,19 +112,27 @@ def estimate_tag_pose(
                     detection=detection,
                     rvec=rvec,
                     tvec=tvec,
-                    reprojection_error_px=reprojection_error(object_points, image_points, rvec, tvec, camera_matrix, dist_coeffs),
+                    reprojection_error_px=reprojection_error(
+                        object_points,
+                        image_points,
+                        rvec,
+                        tvec,
+                        camera_matrix,
+                        dist_coeffs,
+                        distortion_model,
+                    ),
                 )
             )
     if not candidates:
         success, rvec, tvec = cv2.solvePnP(
             object_points,
-            image_points,
+            pnp_image_points,
             camera_matrix,
-            dist_coeffs,
+            pnp_dist_coeffs,
             flags=cv2.SOLVEPNP_IPPE_SQUARE,
         )
         if not success:
-            success, rvec, tvec = cv2.solvePnP(object_points, image_points, camera_matrix, dist_coeffs)
+            success, rvec, tvec = cv2.solvePnP(object_points, pnp_image_points, camera_matrix, pnp_dist_coeffs)
         if not success:
             raise RuntimeError(f"solvePnP failed for tag {detection.tag_id}.")
         candidates.append(
@@ -125,7 +140,15 @@ def estimate_tag_pose(
                 detection=detection,
                 rvec=np.asarray(rvec, dtype=np.float64).reshape(3, 1),
                 tvec=np.asarray(tvec, dtype=np.float64).reshape(3, 1),
-                reprojection_error_px=reprojection_error(object_points, image_points, rvec, tvec, camera_matrix, dist_coeffs),
+                reprojection_error_px=reprojection_error(
+                    object_points,
+                    image_points,
+                    rvec,
+                    tvec,
+                    camera_matrix,
+                    dist_coeffs,
+                    distortion_model,
+                ),
             )
         )
     return min(candidates, key=lambda pose: pose.reprojection_error_px)
@@ -151,11 +174,45 @@ def reprojection_error(
     tvec: np.ndarray,
     camera_matrix: np.ndarray,
     dist_coeffs: np.ndarray,
+    distortion_model: str = "radtan",
 ) -> float:
     import cv2
 
-    projected, _ = cv2.projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs)
+    if _is_fisheye_distortion(distortion_model):
+        projected, _ = cv2.fisheye.projectPoints(
+            object_points.reshape(-1, 1, 3),
+            rvec,
+            tvec,
+            camera_matrix,
+            dist_coeffs.reshape(-1, 1),
+        )
+    else:
+        projected, _ = cv2.projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs)
     return float(np.linalg.norm(projected.reshape(-1, 2) - image_points, axis=1).mean())
+
+
+def _pnp_points_and_distortion(
+    image_points: np.ndarray,
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+    distortion_model: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not _is_fisheye_distortion(distortion_model):
+        return image_points, dist_coeffs
+
+    import cv2
+
+    undistorted = cv2.fisheye.undistortPoints(
+        image_points.reshape(-1, 1, 2),
+        camera_matrix,
+        dist_coeffs.reshape(-1, 1),
+        P=camera_matrix,
+    )
+    return undistorted.reshape(-1, 2), np.zeros((4, 1), dtype=np.float64)
+
+
+def _is_fisheye_distortion(distortion_model: str) -> bool:
+    return distortion_model.lower() in {"equidistant", "opencv_fisheye", "fisheye"}
 
 
 def _opencv_apriltag_dictionary(cv2, family: str):

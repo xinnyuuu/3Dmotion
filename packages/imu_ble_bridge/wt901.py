@@ -136,24 +136,24 @@ class WT901BleClient:
             await asyncio.sleep(0.1)
 
 
-async def scan_wt_devices(timeout_s: float = 8.0) -> list[tuple[str, str]]:
+async def scan_ble_devices(timeout_s: float = 8.0) -> list[dict[str, object]]:
     try:
         from bleak import BleakScanner
     except ImportError as exc:
         raise RuntimeError("Install bleak to scan BLE IMU devices: pip install bleak") from exc
 
-    found: dict[str, tuple[str, str]] = {}
+    found: dict[str, dict[str, object]] = {}
 
     def remember(device, advertisement_data=None) -> None:
         local_name = getattr(advertisement_data, "local_name", None)
         name = local_name or device.name or "Unknown"
         service_uuids = [str(uuid).lower() for uuid in (getattr(advertisement_data, "service_uuids", None) or [])]
-        haystack = " ".join([name, *service_uuids]).upper()
-        # WT901 devices usually advertise a WT* name. Some Linux/BlueZ scans
-        # report only service UUIDs for one of two identical devices, so also
-        # accept the common FFE* service family used by the sensor.
-        if "WT" in haystack or any("ffe" in uuid for uuid in service_uuids):
-            found[device.address] = (name, device.address)
+        found[device.address] = {
+            "name": name,
+            "address": device.address,
+            "service_uuids": service_uuids,
+            "rssi": getattr(device, "rssi", None),
+        }
 
     try:
         scanner = BleakScanner(detection_callback=remember)
@@ -167,6 +167,22 @@ async def scan_wt_devices(timeout_s: float = 8.0) -> list[tuple[str, str]]:
         # constructor. Fall back to discover(), still de-duplicating by address.
         for device in await BleakScanner.discover(timeout=timeout_s):
             remember(device)
+    return sorted(found.values(), key=lambda item: (str(item["name"]).upper(), str(item["address"])))
+
+
+async def scan_wt_devices(timeout_s: float = 8.0) -> list[tuple[str, str]]:
+    devices = await scan_ble_devices(timeout_s)
+    found: dict[str, tuple[str, str]] = {}
+    for device in devices:
+        name = str(device["name"])
+        address = str(device["address"])
+        service_uuids = [str(uuid).lower() for uuid in device.get("service_uuids", [])]
+        haystack = " ".join([name, *service_uuids]).upper()
+        # WT901 devices usually advertise a WT* name. Some Linux/BlueZ scans
+        # report only service UUIDs for one of two identical devices, so also
+        # accept the common FFE* service family used by the sensor.
+        if "WT" in haystack or any("ffe" in uuid for uuid in service_uuids):
+            found[address] = (name, address)
     return sorted(found.values(), key=lambda item: (item[0].upper(), item[1]))
 
 
@@ -186,14 +202,22 @@ def _read_register_command(register: int) -> list[int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Capture WT-series BLE IMU data to JSONL without GUI.")
     parser.add_argument("--scan", action="store_true", help="Scan WT BLE devices and exit.")
+    parser.add_argument("--scan-all", action="store_true", help="Scan all BLE devices for debugging and exit.")
+    parser.add_argument("--scan-timeout-s", type=float, default=8.0, help="BLE scan timeout for --scan or --scan-all.")
     parser.add_argument("--address", help="BLE address of the IMU device.")
     parser.add_argument("--sensor-id", default="wrist_imu", help="Sensor ID written into samples.")
     parser.add_argument("--output", default="data/raw/imu_wrist.jsonl", help="Output JSONL path.")
     parser.add_argument("--duration-s", type=float, default=None, help="Optional capture duration.")
     args = parser.parse_args()
 
+    if args.scan_all:
+        for device in asyncio.run(scan_ble_devices(args.scan_timeout_s)):
+            service_uuids = ",".join(device.get("service_uuids", []))
+            print(f"{device['name']}\t{device['address']}\trssi={device.get('rssi')}\tservices={service_uuids}")
+        return
+
     if args.scan:
-        for name, address in asyncio.run(scan_wt_devices()):
+        for name, address in asyncio.run(scan_wt_devices(args.scan_timeout_s)):
             print(f"{name}\t{address}")
         return
 

@@ -1,59 +1,23 @@
 # quad_camera_capture
 
-Purpose:
+四目 camera 采集模块。完整采集流程见 `../../docs/system_workflow.md`。
+
+## 职责
 
 ```text
 four headset cameras -> timestamped frame groups
 ```
 
-List available V4L2 cameras first:
-
-```bash
-python scripts/list_cameras.py --configs
-```
-
-Probe a selected source before a full capture:
-
-```bash
-python scripts/check_camera_capture.py \
-  --source C0:/dev/video0 \
-  --format MJPG \
-  --width 1280 \
-  --height 720 \
-  --fps 15
-```
-
-The probe writes one image plus `camera_preflight_summary.json`.
-
-This is a first-pass OpenCV capture pipeline for cameras that are not yet
-hardware synchronized. It uses `grab()` on all cameras first, then `retrieve()`
-on each camera and records host timestamps.
-
-Capture four local camera indexes:
-
-```bash
-python scripts/capture_quad_camera.py \
-  --source C0:0 \
-  --source C1:1 \
-  --source C2:2 \
-  --source C3:3 \
-  --fps 30 \
-  --duration-s 30 \
-  --output-dir data/raw/quad_camera_test
-```
-
-Output layout:
+当前是软件近似同步：
 
 ```text
-data/raw/quad_camera_test/
-  frames.jsonl
-  C0/00000000.jpg
-  C1/00000000.jpg
-  C2/00000000.jpg
-  C3/00000000.jpg
+grab C0/C1/C2/C3
+retrieve C0/C1/C2/C3
+record host timestamp
+write JPEG + frames.jsonl
 ```
 
-Each JSONL record includes:
+每条 frame record 包含：
 
 - `group_id`
 - `camera_id`
@@ -63,5 +27,6 @@ Each JSONL record includes:
 - `skew_us`
 - relative image path
 
-This is good enough for early 15-30 FPS feasibility testing. For final motion
-capture, prefer hardware trigger or cameras with device timestamps.
+## 边界
+
+15-30 FPS 原型期可以先用 host timestamp 和 `skew_us` 判断四目同步质量。最终 motion capture 应优先考虑 hardware trigger 或 device timestamp。

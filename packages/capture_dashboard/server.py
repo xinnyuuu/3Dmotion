@@ -20,10 +20,182 @@ from packages.quad_camera_capture.v4l2 import find_capture_devices, get_camera_c
 from packages.session_tools.validate_session import validate_session
 
 
-DEFAULT_CAMERA_WIDTH = 1280
-DEFAULT_CAMERA_HEIGHT = 720
-DEFAULT_CAMERA_FPS = 15.0
+DEFAULT_CAMERA_WIDTH = 1600
+DEFAULT_CAMERA_HEIGHT = 1200
+DEFAULT_CAMERA_FPS = 25.0
+DEFAULT_CAMERA_FORMAT = "MJPG"
 DEFAULT_PREVIEW_FPS = 8.0
+
+
+@dataclass
+class PreviewState:
+    key: str
+    source: str
+    fourcc: str
+    width: int
+    height: int
+    fps: float
+    lock: threading.Lock
+    stop_event: threading.Event
+    thread: threading.Thread | None = None
+    cap: object | None = None
+    last_jpeg: bytes | None = None
+    last_ok_at: float = 0.0
+    failed_reads: int = 0
+    status: str = "opening"
+    stop_incomplete: bool = False
+
+
+class PreviewCaptureManager:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.captures: dict[str, PreviewState] = {}
+
+    def get(self, source: str, fourcc: str, width: int, height: int, fps: float) -> PreviewState:
+        fourcc = _normalize_fourcc(fourcc)
+        with self.lock:
+            state = self.captures.get(source)
+            needs_open = (
+                state is None
+                or state.fourcc != fourcc
+                or state.width != width
+                or state.height != height
+                or state.fps != fps
+            )
+            if needs_open:
+                if state is not None:
+                    self._stop_state(state)
+                    time.sleep(0.12)
+                state = self._start_state(source, fourcc, width, height, fps)
+                self.captures[source] = state
+            return state
+
+    def read_jpeg(self, source: str, fourcc: str, width: int, height: int, fps: float) -> bytes | None:
+        state = self.get(source, fourcc, width, height, fps)
+        with state.lock:
+            return state.last_jpeg
+
+    def stop_all(self) -> None:
+        with self.lock:
+            states = list(self.captures.values())
+            self.captures.clear()
+        for state in states:
+            self._stop_state(state)
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            states = list(self.captures.values())
+        now = time.monotonic()
+        result = {}
+        for state in states:
+            with state.lock:
+                result[state.source] = {
+                    "key": state.key,
+                    "fourcc": state.fourcc,
+                    "width": state.width,
+                    "height": state.height,
+                    "fps": state.fps,
+                    "status": state.status,
+                    "has_jpeg": state.last_jpeg is not None,
+                    "last_ok_age_s": round(now - state.last_ok_at, 2) if state.last_ok_at else None,
+                    "failed_reads": state.failed_reads,
+                    "thread_alive": bool(state.thread and state.thread.is_alive()),
+                    "stop_incomplete": state.stop_incomplete,
+                }
+        return result
+
+    def _start_state(self, source: str, fourcc: str, width: int, height: int, fps: float) -> PreviewState:
+        state = PreviewState(
+            key=_stream_key(source, fourcc, width, height, fps),
+            source=source,
+            fourcc=fourcc,
+            width=width,
+            height=height,
+            fps=fps,
+            lock=threading.Lock(),
+            stop_event=threading.Event(),
+        )
+        state.thread = threading.Thread(target=self._reader_loop, args=(state,), daemon=True)
+        state.thread.start()
+        return state
+
+    def _stop_state(self, state: PreviewState) -> None:
+        state.stop_event.set()
+        cap = state.cap
+        if cap is not None:
+            cap.release()
+        if state.thread is not None and state.thread is not threading.current_thread():
+            state.thread.join(timeout=1.5)
+        still_alive = bool(state.thread and state.thread.is_alive())
+        with state.lock:
+            state.cap = None
+            state.last_jpeg = None
+            state.status = "stopped"
+            state.stop_incomplete = still_alive
+
+    def _open_capture(self, state: PreviewState):
+        import cv2
+
+        cap = cv2.VideoCapture(state.source, cv2.CAP_V4L2)
+        if cap.isOpened():
+            if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 700)
+            if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 700)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*state.fourcc))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, state.width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, state.height)
+            cap.set(cv2.CAP_PROP_FPS, state.fps)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    def _reader_loop(self, state: PreviewState) -> None:
+        import cv2
+
+        delay = 1.0 / max(1.0, state.fps)
+        while not state.stop_event.is_set():
+            cap = self._open_capture(state)
+            with state.lock:
+                state.cap = cap
+                state.status = "streaming" if cap.isOpened() else "open failed"
+                state.failed_reads = 0
+            if not cap.isOpened():
+                cap.release()
+                state.stop_event.wait(0.35)
+                continue
+
+            while not state.stop_event.is_set():
+                started_at = time.monotonic()
+                ok, frame = cap.read()
+                now = time.monotonic()
+                if ok and frame is not None:
+                    encode_ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                    with state.lock:
+                        state.last_ok_at = now
+                        state.failed_reads = 0
+                        state.status = "streaming"
+                        if encode_ok:
+                            state.last_jpeg = encoded.tobytes()
+                else:
+                    with state.lock:
+                        state.failed_reads += 1
+                        state.status = "read timeout"
+                        should_reopen = state.failed_reads >= 3
+                    if should_reopen:
+                        break
+
+                remaining = delay - (time.monotonic() - started_at)
+                if remaining > 0:
+                    state.stop_event.wait(remaining)
+
+            cap.release()
+            with state.lock:
+                if state.cap is cap:
+                    state.cap = None
+                if not state.stop_event.is_set():
+                    state.status = "reopening"
+            if not state.stop_event.is_set():
+                state.stop_event.wait(0.15)
 
 
 @dataclass
@@ -313,6 +485,26 @@ class DashboardServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     def __init__(self, address: tuple[str, int], jobs: CaptureJobs) -> None:
         super().__init__(address, DashboardHandler)
         self.jobs = jobs
+        self.preview_manager = PreviewCaptureManager()
+        self.active_lock = threading.Lock()
+        self.active_streams: dict[str, str] = {}
+
+    def activate_stream(self, source: str, fourcc: str, width: int, height: int, fps: float) -> None:
+        with self.active_lock:
+            self.active_streams[source] = _stream_key(source, fourcc, width, height, fps)
+
+    def is_active_stream(self, source: str, fourcc: str, width: int, height: int, fps: float) -> bool:
+        with self.active_lock:
+            return self.active_streams.get(source) == _stream_key(source, fourcc, width, height, fps)
+
+    def active_stream_snapshot(self) -> dict[str, str]:
+        with self.active_lock:
+            return dict(self.active_streams)
+
+    def stop_previews(self) -> None:
+        with self.active_lock:
+            self.active_streams.clear()
+        self.preview_manager.stop_all()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -336,6 +528,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/status":
             self._send_json(self.server.jobs.snapshot())
             return
+        if parsed.path == "/api/preview/status":
+            self._send_json({"active_streams": self.server.active_stream_snapshot(), "captures": self.server.preview_manager.snapshot()})
+            return
         if parsed.path == "/api/record/latest-frame":
             params = parse_qs(parsed.query)
             camera_id = params.get("camera_id", [""])[0]
@@ -347,13 +542,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "width": DEFAULT_CAMERA_WIDTH,
                     "height": DEFAULT_CAMERA_HEIGHT,
                     "fps": DEFAULT_CAMERA_FPS,
+                    "format": DEFAULT_CAMERA_FORMAT,
                     "preview_fps": DEFAULT_PREVIEW_FPS,
                 }
             )
             return
         if parsed.path == "/api/imu/scan":
             timeout_s = _optional_float(parse_qs(parsed.query).get("timeout_s", ["6"])[0]) or 6.0
-            devices = [{"name": name, "address": address} for name, address in asyncio.run(scan_wt_devices(timeout_s))]
+            try:
+                devices = _scan_imu_devices(timeout_s)
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            except Exception as exc:
+                self._send_json({"error": f"IMU scan failed: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
             self._send_json(devices)
             return
         if parsed.path == "/stream":
@@ -362,8 +565,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             fourcc = unquote(params.get("format", [""])[0])
             width = _optional_int(params.get("width", [None])[0])
             height = _optional_int(params.get("height", [None])[0])
-            fps = _optional_float(params.get("fps", [None])[0]) or DEFAULT_PREVIEW_FPS
-            self._stream_camera(source, fourcc, width, height, fps)
+            device_fps = _optional_float(params.get("device_fps", [None])[0])
+            output_fps = _optional_float(params.get("output_fps", [None])[0]) or DEFAULT_PREVIEW_FPS
+            self._stream_camera(source, fourcc, width, height, device_fps, output_fps)
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -372,16 +576,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         payload = self._read_json()
         try:
             if parsed.path == "/api/camera/start":
+                self.server.stop_previews()
                 self._send_json(self.server.jobs.start_record(payload).as_dict())
                 return
             if parsed.path == "/api/camera/stop":
                 self._send_json(self.server.jobs.stop_record().as_dict())
                 return
             if parsed.path == "/api/record/start":
+                self.server.stop_previews()
                 self._send_json(self.server.jobs.start_record(payload).as_dict())
                 return
             if parsed.path == "/api/record/stop":
                 self._send_json(self.server.jobs.stop_record().as_dict())
+                return
+            if parsed.path == "/api/preview/stop":
+                self.server.stop_previews()
+                self._send_json({"ok": True})
                 return
             if parsed.path == "/api/imu/start":
                 self._send_json(self.server.jobs.select_imu(payload).as_dict())
@@ -397,54 +607,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
-    def _stream_camera(self, source: str, fourcc: str, width: int | None, height: int | None, fps: float) -> None:
+    def _stream_camera(
+        self,
+        source: str,
+        fourcc: str,
+        width: int | None,
+        height: int | None,
+        device_fps: float | None,
+        output_fps: float,
+    ) -> None:
         if not source:
             self.send_error(HTTPStatus.BAD_REQUEST, "Missing source")
             return
+        fourcc = _normalize_fourcc(fourcc)
+        width = width or DEFAULT_CAMERA_WIDTH
+        height = height or DEFAULT_CAMERA_HEIGHT
+        capture_fps = device_fps or output_fps or DEFAULT_PREVIEW_FPS
+        self.server.activate_stream(source, fourcc, width, height, capture_fps)
         try:
-            import cv2
+            import cv2  # noqa: F401
+
+            self.server.preview_manager.get(source, fourcc, width, height, capture_fps)
         except ImportError:
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "opencv-python is not installed")
             return
-        cap = cv2.VideoCapture(_parse_source(source), cv2.CAP_V4L2)
-        if fourcc and len(fourcc) == 4:
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
-        if width:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        if height:
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        if fps:
-            cap.set(cv2.CAP_PROP_FPS, fps)
-        if not cap.isOpened():
-            cap.release()
-            self.send_error(HTTPStatus.BAD_REQUEST, f"Could not open camera: {source}")
-            return
+
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
-        delay = 1.0 / max(1.0, min(fps, 15.0))
+        delay = 1.0 / max(1.0, min(output_fps, 15.0))
         try:
-            while True:
-                ok, frame = cap.read()
-                if not ok:
-                    time.sleep(delay)
-                    continue
-                encode_ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-                if not encode_ok:
-                    continue
-                body = encoded.tobytes()
+            while self.server.is_active_stream(source, fourcc, width, height, capture_fps):
+                frame = self.server.preview_manager.read_jpeg(source, fourcc, width, height, capture_fps)
+                if frame is None:
+                    frame = _make_placeholder_jpeg(source)
                 self.wfile.write(b"--frame\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                self.wfile.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
-                self.wfile.write(body)
+                self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii"))
+                self.wfile.write(frame)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
                 time.sleep(delay)
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
-        finally:
-            cap.release()
 
     def _send_latest_frame(self, camera_id: str) -> None:
         if camera_id not in {"C0", "C1", "C2", "C3"}:
@@ -478,6 +685,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = html.encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -502,6 +710,29 @@ def _parse_source(source: str):
         return source
 
 
+def _normalize_fourcc(value: str) -> str:
+    value = (value or "MJPG").upper()[:4]
+    return value.ljust(4)
+
+
+def _stream_key(source: str, fourcc: str, width: int, height: int, fps: float) -> str:
+    return f"{source}|{_normalize_fourcc(fourcc)}|{width}x{height}@{fps:g}"
+
+
+def _make_placeholder_jpeg(label: str) -> bytes:
+    import cv2
+
+    canvas = cv2.UMat(720, 1280, cv2.CV_8UC3).get()
+    canvas[:] = (18, 20, 28)
+    cv2.putText(canvas, f"No signal: {label}", (60, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (180, 190, 205), 2)
+    ok, encoded = cv2.imencode(".jpg", canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return encoded.tobytes() if ok else b""
+
+
+def _scan_imu_devices(timeout_s: float) -> list[dict[str, str]]:
+    return [{"name": name, "address": address} for name, address in asyncio.run(scan_wt_devices(timeout_s))]
+
+
 def _optional_int(value) -> int | None:
     if value in (None, ""):
         return None
@@ -522,7 +753,7 @@ def _camera_sources_from_payload(payload: dict) -> list[CameraSource]:
         raw_source = str(payload.get(camera_id, "")).strip()
         if raw_source:
             config = camera_configs.get(camera_id) or {}
-            fourcc = str(config.get("format") or "").strip() or None
+            fourcc = str(config.get("format") or DEFAULT_CAMERA_FORMAT).strip() or None
             sources.append(CameraSource(camera_id=camera_id, source=_parse_source(raw_source), fourcc=fourcc))
     return sources
 
@@ -562,7 +793,7 @@ INDEX_HTML = r"""<!doctype html>
     body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; }
     header { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 16px; align-items: center; }
     h1 { margin: 0; font-size: 18px; letter-spacing: 0; }
-    main { display: grid; grid-template-columns: minmax(360px, 430px) minmax(0, 1fr); gap: 14px; padding: 14px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 14px; align-items: start; }
     section { background: var(--panel); border: 1px solid var(--line); padding: 12px; }
     h2 { margin: 0 0 10px; font-size: 15px; }
     label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; margin-bottom: 9px; }
@@ -570,9 +801,19 @@ INDEX_HTML = r"""<!doctype html>
     button { cursor: pointer; background: #1d2430; }
     button.primary { background: var(--accent); border-color: var(--accent); font-weight: 700; }
     button.stop { background: var(--bad); border-color: var(--bad); font-weight: 700; }
+    .controls-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+    .controls-panel section { margin-top: 0 !important; min-height: 100%; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    .camera-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .camera-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 10px; align-items: start; margin-bottom: 10px; }
+    .camera-toolbar h2 { margin: 0; }
+    .camera-toolbar label { margin: 0; }
+    .preview-section { min-width: 0; overflow-x: auto; }
+    .camera-grid { display: grid; grid-template-columns: repeat(var(--camera-columns, 2), minmax(0, 1fr)); gap: 10px; }
+    .camera-grid[data-columns="4"] { grid-template-columns: repeat(4, minmax(420px, 1fr)); min-width: calc(4 * 420px + 3 * 10px); }
+    .camera-grid[data-columns="4"] .tile { min-height: calc(100vh - 130px); }
+    .camera-grid[data-columns="4"] .config-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .camera-grid[data-columns="4"] .screen { min-height: 0; }
     .tile { border: 1px solid var(--line); background: #05070b; min-height: 300px; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
     .tile-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
     .view-title { color: var(--muted); font-size: 12px; font-weight: 700; }
@@ -592,6 +833,9 @@ INDEX_HTML = r"""<!doctype html>
     pre { white-space: pre-wrap; color: var(--muted); background: #0f131b; border: 1px solid var(--line); padding: 10px; min-height: 80px; max-height: 220px; overflow: auto; }
     .status { color: var(--muted); font-size: 13px; }
     .status b { color: var(--good); }
+    @media (max-width: 1100px) {
+      .controls-panel { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -600,7 +844,7 @@ INDEX_HTML = r"""<!doctype html>
     <div class="status" id="status">加载中</div>
   </header>
   <main>
-    <div>
+    <div class="controls-panel">
       <section>
         <h2>Camera 设置</h2>
         <div class="row">
@@ -626,8 +870,18 @@ INDEX_HTML = r"""<!doctype html>
         <pre id="log"></pre>
       </section>
     </div>
-    <section>
-      <h2>Camera 预览</h2>
+    <section class="preview-section">
+      <div class="camera-toolbar">
+        <h2>Camera 预览</h2>
+        <label>Layout
+          <select id="cameraLayout">
+            <option value="2">2 columns</option>
+            <option value="4">4 columns</option>
+            <option value="1">1 column</option>
+            <option value="3">3 columns</option>
+          </select>
+        </label>
+      </div>
       <div class="camera-grid" id="cameraGrid"></div>
     </section>
   </main>
@@ -635,10 +889,14 @@ INDEX_HTML = r"""<!doctype html>
     const SLOT_COUNT = 4;
     const cameraIds = ['C0', 'C1', 'C2', 'C3'];
     const imuSlots = ['head_imu', 'wrist_imu'];
-    const PREFERRED_FPS = 15;
+    const PREFERRED_FORMAT = 'MJPG';
+    const PREFERRED_SIZE = '1600x1200';
+    const PREFERRED_FPS = 25;
+    const SOFTWARE_FPS_OPTIONS = [30, 25, 15, 10, 5];
     const $ = id => document.getElementById(id);
     const cameraGrid = $('cameraGrid');
-    let cameraProfile = {width: 1280, height: 720, fps: 15, preview_fps: 8};
+    const cameraLayout = $('cameraLayout');
+    let cameraProfile = {width: 1600, height: 1200, fps: 25, format: 'MJPG', preview_fps: 8};
     let cameras = [];
     let configs = {};
     let selections = Array.from({length: SLOT_COUNT}, () => '');
@@ -647,6 +905,13 @@ INDEX_HTML = r"""<!doctype html>
     let imuDevices = [];
     let recordingActive = false;
     let recordingPreviewTimer = null;
+
+    function applyCameraLayout() {
+      const columns = Number(cameraLayout.value || 2);
+      const safeColumns = [1, 2, 3, 4].includes(columns) ? columns : 2;
+      cameraGrid.style.setProperty('--camera-columns', String(safeColumns));
+      cameraGrid.dataset.columns = String(safeColumns);
+    }
 
     async function api(path, options = {}) {
       const res = await fetch(path, options);
@@ -692,13 +957,19 @@ INDEX_HTML = r"""<!doctype html>
     function selectedFormat(path, slot) {
       const formats = configs[path] || [];
       const current = streamConfigs[slot]?.format;
-      return formats.find(format => format.format === current)?.format || formats[0]?.format || '';
+      return formats.find(format => format.format === current)?.format ||
+        formats.find(format => format.format === (cameraProfile.format || PREFERRED_FORMAT))?.format ||
+        formats.find(format => format.format === PREFERRED_FORMAT)?.format ||
+        formats[0]?.format || '';
     }
 
     function selectedSize(path, slot, formatName) {
       const format = (configs[path] || []).find(item => item.format === formatName);
       const current = streamConfigs[slot]?.size;
+      const preferred = `${cameraProfile.width || 1600}x${cameraProfile.height || 1200}`;
       return format?.sizes?.find(size => (size.label || `${size.width}x${size.height}`) === current)?.label ||
+        format?.sizes?.find(size => (size.label || `${size.width}x${size.height}`) === preferred)?.label ||
+        format?.sizes?.find(size => (size.label || `${size.width}x${size.height}`) === PREFERRED_SIZE)?.label ||
         (format?.sizes?.[0] ? (format.sizes[0].label || `${format.sizes[0].width}x${format.sizes[0].height}`) : '');
     }
 
@@ -706,9 +977,37 @@ INDEX_HTML = r"""<!doctype html>
       const format = (configs[path] || []).find(item => item.format === formatName);
       const size = format?.sizes?.find(item => (item.label || `${item.width}x${item.height}`) === sizeLabel);
       const current = Number(streamConfigs[slot]?.fps || 0);
-      if (size?.fps?.includes(current)) return String(current);
-      const preferred = size?.fps?.find(value => value <= PREFERRED_FPS) || size?.fps?.[size.fps.length - 1];
+      const options = fpsValues(size);
+      if (options.includes(current)) return String(current);
+      const target = Number(cameraProfile.fps || PREFERRED_FPS);
+      const preferred = options.find(value => value === target) ||
+        options.find(value => value <= target) ||
+        options[options.length - 1];
       return String(preferred || '');
+    }
+
+    function hardwareFpsValues(size) {
+      return (size?.fps || []).map(Number).filter(value => value > 0).sort((a, b) => b - a);
+    }
+
+    function fpsValues(size) {
+      const hardware = hardwareFpsValues(size);
+      const maxHardware = Math.max(0, ...hardware);
+      const software = SOFTWARE_FPS_OPTIONS.filter(value => maxHardware <= 0 || value < maxHardware);
+      return Array.from(new Set([...hardware, ...software])).sort((a, b) => b - a);
+    }
+
+    function selectedSizeConfig(path, formatName, sizeLabel) {
+      const format = (configs[path] || []).find(item => item.format === formatName);
+      return format?.sizes?.find(item => (item.label || `${item.width}x${item.height}`) === sizeLabel);
+    }
+
+    function deviceFpsFor(size, requestedFps) {
+      const requested = Number(requestedFps || 0);
+      const hardware = hardwareFpsValues(size);
+      if (!hardware.length) return requested || '';
+      if (hardware.includes(requested)) return requested;
+      return hardware.slice().reverse().find(value => value >= requested) || hardware[hardware.length - 1];
     }
 
     function sizeOptions(path, formatName, selectedSizeLabel = '') {
@@ -721,11 +1020,12 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function fpsOptions(path, formatName, sizeLabel, selectedFpsValue = '') {
-      const format = (configs[path] || []).find(item => item.format === formatName);
-      const size = format?.sizes?.find(item => (item.label || `${item.width}x${item.height}`) === sizeLabel);
-      return (size?.fps || []).map(fps => {
+      const size = selectedSizeConfig(path, formatName, sizeLabel);
+      const hardware = new Set(hardwareFpsValues(size));
+      return fpsValues(size).map(fps => {
         const selected = String(fps) === String(selectedFpsValue) ? ' selected' : '';
-        return `<option value="${fps}"${selected}>${fps} fps</option>`;
+        const suffix = hardware.has(Number(fps)) ? '' : ' software';
+        return `<option value="${fps}"${selected}>${fps} fps${suffix}</option>`;
       }).join('');
     }
 
@@ -741,7 +1041,8 @@ INDEX_HTML = r"""<!doctype html>
       const format = selectedFormat(path, slot);
       const size = selectedSize(path, slot, format);
       const fps = selectedFps(path, slot, format, size);
-      streamConfigs[slot] = {format, size, fps};
+      const device_fps = deviceFpsFor(selectedSizeConfig(path, format, size), fps);
+      streamConfigs[slot] = {format, size, fps, device_fps};
       return streamConfigs[slot];
     }
 
@@ -754,7 +1055,8 @@ INDEX_HTML = r"""<!doctype html>
         params.set('width', width);
         params.set('height', height);
       }
-      if (config.fps) params.set('fps', Math.min(Number(config.fps), Number(cameraProfile.preview_fps)));
+      if (config.device_fps) params.set('device_fps', config.device_fps);
+      if (config.fps) params.set('output_fps', Math.min(Number(config.fps), Number(cameraProfile.preview_fps)));
       return `/stream?${params.toString()}`;
     }
 
@@ -807,7 +1109,11 @@ INDEX_HTML = r"""<!doctype html>
         };
         const restartStream = () => {
           const cfg = normalizeSlotConfig(i);
-          img.src = streamUrl(selections[i], cfg);
+          const nextUrl = streamUrl(selections[i], cfg);
+          img.removeAttribute('src');
+          requestAnimationFrame(() => {
+            img.src = nextUrl;
+          });
           overlay.textContent = `${cameraLabel(selections[i])}${cfg.size ? ` | ${cfg.format} ${cfg.size} @ ${cfg.fps}fps` : ''}`;
           badge.textContent = selections[i] ? 'LIVE' : 'IDLE';
           badge.className = `badge ${selections[i] ? 'live' : 'idle'}`;
@@ -815,7 +1121,7 @@ INDEX_HTML = r"""<!doctype html>
         };
         cameraSelect.addEventListener('change', () => {
           selections[i] = cameraSelect.value;
-          streamConfigs[i] = {format: '', size: '', fps: ''};
+          streamConfigs[i] = {format: '', size: '', fps: '', device_fps: ''};
           updateControls();
           restartStream();
         });
@@ -823,12 +1129,14 @@ INDEX_HTML = r"""<!doctype html>
           streamConfigs[i].format = formatSelect.value;
           streamConfigs[i].size = '';
           streamConfigs[i].fps = '';
+          streamConfigs[i].device_fps = '';
           updateControls();
           restartStream();
         });
         sizeSelect.addEventListener('change', () => {
           streamConfigs[i].size = sizeSelect.value;
           streamConfigs[i].fps = '';
+          streamConfigs[i].device_fps = '';
           updateControls();
           restartStream();
         });
@@ -1026,6 +1334,7 @@ INDEX_HTML = r"""<!doctype html>
         restartCameraPreviews();
       } else {
         clearCameraPreviews();
+        await api('/api/preview/stop', {method:'POST', body: '{}'});
         await new Promise(resolve => setTimeout(resolve, 1000));
         await api('/api/record/start', {method:'POST', body: JSON.stringify(recordPayload())});
         startRecordingPreviews();
@@ -1036,6 +1345,7 @@ INDEX_HTML = r"""<!doctype html>
     $('refreshCameras').onclick = () => runAction(() => loadCameras(false));
     $('assignCameras').onclick = () => runAction(() => loadCameras(true));
     $('recordToggle').onclick = () => runAction(toggleRecord);
+    cameraLayout.onchange = applyCameraLayout;
     $('scanImu').onclick = () => runAction(async () => {
       imuDevices = await api('/api/imu/scan?timeout_s=6');
       for (const slot of imuSlots) {
@@ -1055,6 +1365,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     runAction(async () => {
+      applyCameraLayout();
       await loadProfile();
       await loadCameras(true);
       await refreshStatus();

@@ -72,6 +72,12 @@ def process_session(
                 calibration = camera_calibrations.get(camera_id)
                 if calibration is None:
                     continue
+                if not calibration.supported_opencv_projection:
+                    raise RuntimeError(
+                        f"Camera {camera_id} uses projection_model={calibration.projection_model!r}. "
+                        "This AprilTag processor currently supports pinhole/radtan and fisheye/equidistant only. "
+                        "Use the OpenCV fisheye fallback config, or add a projection adapter for this Kalibr model."
+                    )
                 image_path = session_dir / frame_record["image_path"]
                 image = cv2.imread(str(image_path))
                 if image is None:
@@ -129,7 +135,15 @@ def _estimate_frame_tags(
     for detection in detector.detect(image):
         if bracelet.tag_to_wrist and detection.tag_id not in bracelet.tag_to_wrist:
             continue
-        poses.append(estimate_tag_pose(detection, bracelet.tag_size_m, camera_matrix, calibration.distortion))
+        poses.append(
+            estimate_tag_pose(
+                detection,
+                bracelet.tag_size_m,
+                camera_matrix,
+                calibration.distortion,
+                calibration.distortion_model,
+            )
+        )
     return poses
 
 

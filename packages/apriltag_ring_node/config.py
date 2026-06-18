@@ -13,9 +13,17 @@ from .geometry import RigidTransform, parse_transform, rotation_y
 class CameraCalibration:
     camera_id: str
     image_size: tuple[int, int] | None
+    camera_model: str
+    distortion_model: str
+    projection_model: str
+    projection_parameters: list[float]
     intrinsics: np.ndarray
     distortion: np.ndarray
     T_H_C: RigidTransform
+
+    @property
+    def supported_opencv_projection(self) -> bool:
+        return self.projection_model in {"pinhole", "fisheye"}
 
 
 @dataclass
@@ -37,11 +45,19 @@ def load_camera_calibrations(path: Path) -> dict[str, CameraCalibration]:
         intrinsics = cfg.get("intrinsics") or defaults.get("intrinsics")
         distortion = cfg.get("distortion") or defaults.get("distortion")
         image_size = cfg.get("image_size") or defaults.get("image_size")
+        camera_model = str(cfg.get("camera_model") or defaults.get("camera_model") or "pinhole")
+        distortion_model = str(cfg.get("distortion_model") or defaults.get("distortion_model") or "radtan")
+        projection_model = str(cfg.get("projection_model") or defaults.get("projection_model") or camera_model)
+        projection_parameters = cfg.get("projection_parameters") or defaults.get("projection_parameters") or []
         if intrinsics is None:
             continue
         result[camera_id] = CameraCalibration(
             camera_id=camera_id,
             image_size=tuple(int(v) for v in image_size) if image_size is not None else None,
+            camera_model=camera_model,
+            distortion_model=distortion_model,
+            projection_model=projection_model,
+            projection_parameters=[float(value) for value in projection_parameters],
             intrinsics=np.asarray(intrinsics, dtype=np.float64).reshape(3, 3),
             distortion=np.asarray(distortion if distortion is not None else [0, 0, 0, 0, 0], dtype=np.float64).reshape(-1, 1),
             T_H_C=parse_transform(cfg.get("T_H_C"), default=RigidTransform.identity()),

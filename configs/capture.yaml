@@ -8,8 +8,11 @@ imu:
     timestamp_source: host_receive
 
 cameras:
-  target_fps: 30
-  min_expected_fps: 15
+  format: MJPG
+  width: 1600
+  height: 1200
+  target_fps: 25
+  min_expected_fps: 20
   output_dir: data/raw/quad_camera_session
   timestamp_source: host_retrieve
   sources:
@@ -33,4 +36,3 @@ sync:
     - timestamp_monotonic_ns
     - timestamp_unix_ns
     - timestamp_source
-

@@ -18,6 +18,9 @@ def main() -> None:
     parser.add_argument("--prepared-dir", required=True, help="Directory containing images.jsonl and imu.jsonl.")
     parser.add_argument("--bag-dir", default="data/processed/openvins_session/rosbag2", help="Output rosbag2 directory.")
     parser.add_argument("--frame-id", default="headset", help="Frame ID for IMU messages. Image frame IDs use camera IDs.")
+    parser.add_argument("--max-duration-s", type=float, help="Optional debug export duration in seconds.")
+    parser.add_argument("--start-offset-s", type=float, default=0.0, help="Skip this many seconds from the beginning before writing.")
+    parser.add_argument("--image-stride", type=int, default=1, help="Write every Nth image while keeping all IMU samples. Default: 1.")
     args = parser.parse_args()
 
     try:
@@ -25,6 +28,9 @@ def main() -> None:
             prepared_dir=Path(args.prepared_dir),
             bag_dir=Path(args.bag_dir),
             frame_id=args.frame_id,
+            max_duration_s=args.max_duration_s,
+            start_offset_s=args.start_offset_s,
+            image_stride=args.image_stride,
         )
     except Exception as exc:
         raise SystemExit(str(exc)) from exc

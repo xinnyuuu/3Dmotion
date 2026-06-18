@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+from pathlib import Path
+
+from packages.head_vio_bridge.openvins_session import write_openvins_rosbag2
+from packages.head_vio_bridge.p3_head_vio import prepare_p3_head_vio
+
+
+def process_head_vio_session(
+    session_dir: Path,
+    *,
+    output_dir: Path | None = None,
+    cameras_path: Path = Path("configs/cameras.yaml"),
+    template_config_dir: Path | None = Path("open_vins/config/euroc_mav"),
+    camera_id: str = "C0",
+    imu_slot: str = "head_imu",
+    write_rosbag: bool = True,
+    overwrite_rosbag: bool = True,
+    fail_on_not_ready: bool = True,
+    max_duration_s: float | None = None,
+    start_offset_s: float = 0.0,
+    image_stride: int = 1,
+) -> dict:
+    """Prepare one raw dashboard session for OpenVINS and optional ROS2 replay.
+
+    This is the one-command path for repeated P3a experiments:
+    raw dashboard session -> readiness report -> OpenVINS JSONL/config -> rosbag2.
+    """
+
+    session_dir = session_dir.resolve()
+    output_dir = output_dir or Path("data/processed") / session_dir.name / "openvins_c0"
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    p3_summary = prepare_p3_head_vio(
+        session_dir=session_dir,
+        output_dir=output_dir,
+        config_dir=output_dir / "config",
+        cameras_path=cameras_path,
+        template_config_dir=template_config_dir,
+        camera_id=camera_id,
+        imu_slot=imu_slot,
+        fail_on_not_ready=fail_on_not_ready,
+    )
+
+    rosbag_summary = _maybe_write_rosbag2(
+        output_dir=output_dir,
+        imu_slot=imu_slot,
+        enabled=write_rosbag and bool(p3_summary.get("ready_for_p3a")),
+        overwrite=overwrite_rosbag,
+        skipped_reason=None if write_rosbag else "Disabled by --no-rosbag2.",
+        max_duration_s=max_duration_s,
+        start_offset_s=start_offset_s,
+        image_stride=image_stride,
+    )
+
+    summary = {
+        "session_dir": str(session_dir),
+        "output_dir": str(output_dir),
+        "ready_for_p3a": bool(p3_summary.get("ready_for_p3a")),
+        "ok": bool(p3_summary.get("ready_for_p3a")) and (not write_rosbag or rosbag_summary.get("ok", False)),
+        "camera_id": camera_id,
+        "imu_slot": imu_slot,
+        "steps": {
+            "p3_head_vio": p3_summary,
+            "rosbag2": rosbag_summary,
+        },
+        "next_commands": _next_commands(output_dir),
+        "notes": [
+            "P3a only exports C0 + head_imu. Wrist IMU and AprilTag are not used by head VIO.",
+            "Run this command from a ROS2-sourced terminal if you want rosbag2 to be written in the same step.",
+            "RViz shows head_imu as the temporary head frame: H := I_H.",
+        ],
+    }
+    summary_path = output_dir / "head_vio_process_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return summary
+
+
+def _maybe_write_rosbag2(
+    *,
+    output_dir: Path,
+    imu_slot: str,
+    enabled: bool,
+    overwrite: bool,
+    skipped_reason: str | None,
+    max_duration_s: float | None,
+    start_offset_s: float,
+    image_stride: int,
+) -> dict:
+    bag_dir = output_dir / "rosbag2"
+    if not enabled:
+        return {
+            "ok": False,
+            "skipped": True,
+            "bag_dir": str(bag_dir),
+            "reason": skipped_reason or "P3a readiness failed; rosbag2 export was skipped.",
+        }
+
+    if overwrite:
+        _remove_existing_rosbag(output_dir=output_dir, bag_dir=bag_dir)
+
+    try:
+        rosbag_summary = write_openvins_rosbag2(
+            prepared_dir=output_dir,
+            bag_dir=bag_dir,
+            frame_id=imu_slot,
+            max_duration_s=max_duration_s,
+            start_offset_s=start_offset_s,
+            image_stride=image_stride,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "bag_dir": str(bag_dir),
+            "error": str(exc),
+            "hint": (
+                "If this says ROS2 Python packages are missing, run: "
+                "`source /opt/ros/humble/setup.bash`, then rerun this same process command."
+            ),
+        }
+
+    return {
+        "ok": True,
+        "skipped": False,
+        "bag_dir": str(bag_dir),
+        "summary": rosbag_summary,
+    }
+
+
+def _remove_existing_rosbag(*, output_dir: Path, bag_dir: Path) -> None:
+    output_root = output_dir.resolve()
+    bag_root = bag_dir.resolve()
+    if bag_root.name != "rosbag2" or not bag_root.is_relative_to(output_root):
+        raise ValueError(f"Refusing to overwrite unexpected rosbag2 path: {bag_dir}")
+    if bag_root.exists():
+        shutil.rmtree(bag_root)
+    summary_path = bag_root.with_name(f"{bag_root.name}_summary.json")
+    if summary_path.exists():
+        summary_path.unlink()
+
+
+def _next_commands(output_dir: Path) -> dict:
+    config_path = output_dir / "config" / "estimator_config.yaml"
+    bag_dir = output_dir / "rosbag2"
+    return {
+        "run_openvins": (
+            "source scripts/source_openvins_ros2.bash\n"
+            "ros2 launch ov_msckf subscribe.launch.py "
+            f"config_path:={config_path} "
+            "max_cameras:=1 use_stereo:=false"
+        ),
+        "play_rosbag2": (
+            "source /opt/ros/humble/setup.bash\n"
+            f"ros2 bag play {bag_dir}"
+        ),
+        "launch_rviz": (
+            "cd ros2_ws\n"
+            "source /opt/ros/humble/setup.bash\n"
+            "source install/setup.bash\n"
+            "ros2 launch vimas_motion_bringup head_vio_rviz.launch.py"
+        ),
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="One-command P3a processing: raw session -> OpenVINS inputs/config -> optional rosbag2."
+    )
+    parser.add_argument("--session-dir", required=True, help="Dashboard raw session, e.g. data/raw/session_YYYYMMDD_HHMMSS.")
+    parser.add_argument("--output-dir", help="Default: data/processed/<session_name>/openvins_c0.")
+    parser.add_argument("--cameras", default="configs/cameras.yaml")
+    parser.add_argument("--template-config-dir", default="open_vins/config/euroc_mav")
+    parser.add_argument("--camera-id", default="C0")
+    parser.add_argument("--imu-slot", default="head_imu")
+    parser.add_argument("--no-rosbag2", action="store_true", help="Only write JSONL/config; skip rosbag2 export.")
+    parser.add_argument("--keep-existing-rosbag2", action="store_true", help="Do not delete an existing rosbag2 directory before export.")
+    parser.add_argument("--allow-not-ready", action="store_true", help="Write intermediate outputs even if P3a readiness checks fail.")
+    parser.add_argument("--max-duration-s", type=float, help="Optional debug rosbag2 export duration in seconds.")
+    parser.add_argument("--start-offset-s", type=float, default=0.0, help="Skip this many seconds from the beginning before writing rosbag2.")
+    parser.add_argument("--image-stride", type=int, default=1, help="Write every Nth image to rosbag2 while keeping all IMU samples.")
+    args = parser.parse_args()
+
+    summary = process_head_vio_session(
+        session_dir=Path(args.session_dir),
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        cameras_path=Path(args.cameras),
+        template_config_dir=Path(args.template_config_dir) if args.template_config_dir else None,
+        camera_id=args.camera_id,
+        imu_slot=args.imu_slot,
+        write_rosbag=not args.no_rosbag2,
+        overwrite_rosbag=not args.keep_existing_rosbag2,
+        fail_on_not_ready=not args.allow_not_ready,
+        max_duration_s=args.max_duration_s,
+        start_offset_s=args.start_offset_s,
+        image_stride=args.image_stride,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    if not summary["ready_for_p3a"] and not args.allow_not_ready:
+        raise SystemExit(1)
+    if not args.no_rosbag2 and not summary["steps"]["rosbag2"].get("ok", False):
+        raise SystemExit(2)
+    raise SystemExit(0)
+
+
+if __name__ == "__main__":
+    main()

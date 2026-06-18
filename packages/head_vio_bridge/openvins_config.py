@@ -62,6 +62,9 @@ def _write_estimator_config(path: Path, template_config_dir: Path | None) -> Non
             text = path.read_text(encoding="utf-8")
             text = text.replace("use_stereo: true", "use_stereo: false")
             text = text.replace("max_cameras: 2", "max_cameras: 1")
+            text = _replace_scalar_yaml_line(text, "init_imu_thresh", "0.5")
+            text = _replace_scalar_yaml_line(text, "fast_threshold", "10")
+            text = _replace_scalar_yaml_line(text, "track_frequency", "15.0")
             path.write_text(text, encoding="utf-8")
             return
 
@@ -93,7 +96,7 @@ feat_rep_aruco: "ANCHORED_MSCKF_INVERSE_DEPTH"
 
 try_zupt: false
 init_window_time: 2.0
-init_imu_thresh: 1.5
+init_imu_thresh: 0.5
 init_max_disparity: 10.0
 init_max_features: 50
 init_dyn_use: false
@@ -106,7 +109,7 @@ filepath_gt: "/tmp/ov_groundtruth.txt"
 
 use_klt: true
 num_pts: 200
-fast_threshold: 20
+fast_threshold: 10
 grid_x: 5
 grid_y: 5
 min_px_dist: 10
@@ -148,18 +151,41 @@ def _write_imu_chain(path: Path) -> None:
     _write_opencv_yaml(path, data)
 
 
+def _replace_scalar_yaml_line(text: str, key: str, value: str) -> str:
+    lines = []
+    prefix = f"{key}:"
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        if stripped.startswith(prefix):
+            comment = ""
+            if "#" in stripped:
+                comment = " " + stripped[stripped.index("#") :]
+            lines.append(f"{indent}{key}: {value}{comment}")
+        else:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
 def _write_imucam_chain(path: Path, calibrations) -> None:
     data = {}
     for index, calibration in enumerate(calibrations):
+        if not calibration.supported_opencv_projection:
+            raise RuntimeError(
+                f"Camera {calibration.camera_id} uses projection_model={calibration.projection_model!r}. "
+                "This OpenVINS config generator supports pinhole/radtan and fisheye/equidistant only. "
+                "Use a Kalibr/OpenVINS-compatible equidistant fallback, or extend OpenVINS camera models first."
+            )
         intrinsics = calibration.intrinsics
         distortion = calibration.distortion.reshape(-1).tolist()
         width, height = calibration.image_size or (0, 0)
+        distortion_model = _openvins_distortion_model(calibration.distortion_model)
         data[f"cam{index}"] = {
             "T_imu_cam": calibration.T_H_C.as_matrix().tolist(),
             "cam_overlaps": [i for i in range(len(calibrations)) if i != index],
             "camera_model": "pinhole",
             "distortion_coeffs": [float(v) for v in distortion[:4]],
-            "distortion_model": "radtan",
+            "distortion_model": distortion_model,
             "intrinsics": [
                 float(intrinsics[0, 0]),
                 float(intrinsics[1, 1]),
@@ -170,6 +196,12 @@ def _write_imucam_chain(path: Path, calibrations) -> None:
             "rostopic": f"/cam{index}/image_raw",
         }
     _write_opencv_yaml(path, data)
+
+
+def _openvins_distortion_model(value: str) -> str:
+    if value.lower() in {"equidistant", "opencv_fisheye", "fisheye"}:
+        return "equidistant"
+    return "radtan"
 
 
 def _write_opencv_yaml(path: Path, data: dict) -> None:

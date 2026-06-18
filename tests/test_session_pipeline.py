@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from packages.head_vio_bridge.p3_head_vio import check_head_vio_readiness, prepare_p3_head_vio
+from packages.head_vio_bridge.process_head_vio_session import process_head_vio_session
+from packages.head_vio_bridge.euroc_session import prepare_euroc_openvins_session
 from packages.head_vio_bridge.openvins_session import prepare_openvins_session
+from packages.head_vio_bridge.openvins_session import _filter_rosbag_records
+from packages.capture_dashboard import server as dashboard_server
 from packages.session_tools.postprocess_session import postprocess_session
 from packages.session_tools.validate_session import validate_session
 
@@ -111,6 +115,77 @@ def test_prepare_p3_head_vio_writes_session_and_config(tmp_path: Path) -> None:
     assert (config / "kalibr_imucam_chain.yaml").exists()
 
 
+def test_process_head_vio_session_writes_one_command_outputs_without_rosbag(tmp_path: Path) -> None:
+    session = _make_p3_session(tmp_path)
+    output = tmp_path / "processed" / "openvins_c0"
+
+    summary = process_head_vio_session(
+        session_dir=session,
+        output_dir=output,
+        cameras_path=Path("configs/cameras.yaml"),
+        camera_id="C0",
+        imu_slot="head_imu",
+        write_rosbag=False,
+    )
+
+    assert summary["ok"] is True
+    assert summary["ready_for_p3a"] is True
+    assert summary["steps"]["rosbag2"]["skipped"] is True
+    assert (output / "images.jsonl").exists()
+    assert (output / "imu.jsonl").exists()
+    assert (output / "config" / "estimator_config.yaml").exists()
+    assert (output / "head_vio_process_summary.json").exists()
+
+
+def test_filter_rosbag_records_limits_duration_and_strides_images() -> None:
+    image_records = [{"timestamp_unix_ns": index * 1_000_000_000} for index in range(6)]
+    imu_records = [{"timestamp_unix_ns": index * 500_000_000} for index in range(12)]
+
+    images, imus, summary = _filter_rosbag_records(
+        image_records,
+        imu_records,
+        max_duration_s=2.0,
+        start_offset_s=1.0,
+        image_stride=2,
+    )
+
+    assert [record["timestamp_unix_ns"] for record in images] == [1_000_000_000, 3_000_000_000]
+    assert imus[0]["timestamp_unix_ns"] == 1_000_000_000
+    assert imus[-1]["timestamp_unix_ns"] == 3_000_000_000
+    assert summary["window_counts"] == {"images": 3, "imu_samples": 5}
+    assert summary["output_counts"] == {"images": 2, "imu_samples": 5}
+
+
+def test_prepare_euroc_openvins_session_exports_stereo_layout(tmp_path: Path) -> None:
+    mav0 = _make_euroc_mav0(tmp_path)
+    config_source = _make_euroc_config_source(tmp_path)
+    output = tmp_path / "processed" / "euroc"
+
+    summary = prepare_euroc_openvins_session(
+        mav0_dir=mav0,
+        output_dir=output,
+        config_source_dir=config_source,
+    )
+
+    assert summary["counts"] == {"cam0_images": 2, "cam1_images": 2, "imu_samples": 2}
+    image_records = _read_jsonl(output / "images.jsonl")
+    imu_records = _read_jsonl(output / "imu.jsonl")
+    assert {record["topic"] for record in image_records} == {"/cam0/image_raw", "/cam1/image_raw"}
+    assert imu_records[0]["topic"] == "/imu0"
+    assert (output / "config" / "estimator_config.yaml").exists()
+    assert (output / "euroc_openvins_session_manifest.json").exists()
+
+
+def test_dashboard_imu_scan_helper_formats_devices(monkeypatch) -> None:
+    async def fake_scan(timeout_s: float):
+        assert timeout_s == 1.5
+        return [("WT901", "AA:BB:CC:DD:EE:FF")]
+
+    monkeypatch.setattr(dashboard_server, "scan_wt_devices", fake_scan)
+
+    assert dashboard_server._scan_imu_devices(1.5) == [{"name": "WT901", "address": "AA:BB:CC:DD:EE:FF"}]
+
+
 def _make_session(tmp_path: Path, *, with_frame: bool, with_head_imu: bool) -> Path:
     session = tmp_path / "session_20260612_010000"
     cameras = session / "cameras"
@@ -198,6 +273,35 @@ def _make_p3_session(tmp_path: Path) -> Path:
         )
     _write_jsonl(imus / "head_imu.jsonl", imu_records)
     return session
+
+
+def _make_euroc_mav0(tmp_path: Path) -> Path:
+    mav0 = tmp_path / "mav0"
+    for camera_id in ["cam0", "cam1"]:
+        data_dir = mav0 / camera_id / "data"
+        data_dir.mkdir(parents=True)
+        for timestamp in [1000, 2000]:
+            (data_dir / f"{timestamp}.png").write_bytes(b"fake image")
+        (mav0 / camera_id / "data.csv").write_text(
+            "#timestamp [ns],filename\n1000,1000.png\n2000,2000.png\n",
+            encoding="utf-8",
+        )
+    (mav0 / "imu0").mkdir(parents=True)
+    (mav0 / "imu0" / "data.csv").write_text(
+        "#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]\n"
+        "900,0.1,0.2,0.3,1.0,2.0,9.8\n"
+        "1900,0.2,0.3,0.4,1.1,2.1,9.7\n",
+        encoding="utf-8",
+    )
+    return mav0
+
+
+def _make_euroc_config_source(tmp_path: Path) -> Path:
+    config = tmp_path / "config_source"
+    config.mkdir()
+    for name in ["estimator_config.yaml", "kalibr_imu_chain.yaml", "kalibr_imucam_chain.yaml"]:
+        (config / name).write_text("%YAML:1.0\n", encoding="utf-8")
+    return config
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:

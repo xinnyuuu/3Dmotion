@@ -4,9 +4,14 @@ project(vimas_motion_bringup)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY launch
+  PROGRAMS
+    scripts/head_vio_visualizer.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY launch rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()
-
