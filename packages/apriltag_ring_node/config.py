@@ -12,10 +12,12 @@ from .geometry import RigidTransform, parse_transform, rotation_y
 @dataclass
 class CameraCalibration:
     camera_id: str
+    role: str
     image_size: tuple[int, int] | None
     camera_model: str
     distortion_model: str
     projection_model: str
+    xi: float | None
     projection_parameters: list[float]
     intrinsics: np.ndarray
     distortion: np.ndarray
@@ -23,7 +25,11 @@ class CameraCalibration:
 
     @property
     def supported_opencv_projection(self) -> bool:
-        return self.projection_model in {"pinhole", "fisheye"}
+        return self.projection_model in {"pinhole", "fisheye", "mei", "omni"}
+
+    @property
+    def uses_omni_projection(self) -> bool:
+        return self.projection_model in {"mei", "omni"} or self.camera_model in {"mei", "omni"}
 
 
 @dataclass
@@ -49,20 +55,28 @@ def load_camera_calibrations(path: Path) -> dict[str, CameraCalibration]:
         distortion_model = str(cfg.get("distortion_model") or defaults.get("distortion_model") or "radtan")
         projection_model = str(cfg.get("projection_model") or defaults.get("projection_model") or camera_model)
         projection_parameters = cfg.get("projection_parameters") or defaults.get("projection_parameters") or []
+        xi = cfg.get("xi", defaults.get("xi"))
         if intrinsics is None:
             continue
         result[camera_id] = CameraCalibration(
             camera_id=camera_id,
+            role=str(cfg.get("role") or ""),
             image_size=tuple(int(v) for v in image_size) if image_size is not None else None,
             camera_model=camera_model,
             distortion_model=distortion_model,
             projection_model=projection_model,
+            xi=float(xi) if xi is not None else None,
             projection_parameters=[float(value) for value in projection_parameters],
             intrinsics=np.asarray(intrinsics, dtype=np.float64).reshape(3, 3),
             distortion=np.asarray(distortion if distortion is not None else [0, 0, 0, 0, 0], dtype=np.float64).reshape(-1, 1),
             T_H_C=parse_transform(cfg.get("T_H_C"), default=RigidTransform.identity()),
         )
     return result
+
+
+def load_camera_priority(path: Path) -> list[str]:
+    data = _load_yaml(path)
+    return [str(camera_id) for camera_id in data.get("camera_priority", [])]
 
 
 def load_bracelet_config(path: Path) -> BraceletConfig:

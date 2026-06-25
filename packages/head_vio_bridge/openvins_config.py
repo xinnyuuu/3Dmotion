@@ -7,7 +7,10 @@ from pathlib import Path
 
 import yaml
 
-from packages.apriltag_ring_node.config import load_camera_calibrations
+from packages.apriltag_ring_node.config import load_camera_calibrations, load_camera_priority
+
+
+DEFAULT_HEAD_CAMERA_IDS = ["C1", "C2", "C0", "C3"]
 
 
 class _OpenCvYamlDumper(yaml.SafeDumper):
@@ -22,7 +25,11 @@ def generate_openvins_config(
     template_config_dir: Path | None = None,
 ) -> dict:
     calibrations = load_camera_calibrations(cameras_path)
-    selected_ids = camera_ids or ["C0"]
+    configured_priority = load_camera_priority(cameras_path)
+    default_priority = configured_priority or DEFAULT_HEAD_CAMERA_IDS
+    selected_ids = camera_ids or [camera_id for camera_id in default_priority if camera_id in calibrations]
+    if not selected_ids:
+        selected_ids = list(calibrations)
     missing = [camera_id for camera_id in selected_ids if camera_id not in calibrations]
     if missing:
         raise RuntimeError(f"Missing camera calibration entries: {missing}")
@@ -32,7 +39,7 @@ def generate_openvins_config(
     imu_path = output_dir / "kalibr_imu_chain.yaml"
     imucam_path = output_dir / "kalibr_imucam_chain.yaml"
 
-    _write_estimator_config(estimator_path, template_config_dir)
+    _write_estimator_config(estimator_path, template_config_dir, camera_count=len(selected_ids))
     _write_imu_chain(imu_path)
     _write_imucam_chain(imucam_path, [calibrations[camera_id] for camera_id in selected_ids])
 
@@ -48,20 +55,28 @@ def generate_openvins_config(
             "imu": "/imu0",
             "cameras": {camera_id: f"/cam{index}/image_raw" for index, camera_id in enumerate(selected_ids)},
         },
+        "camera_priority": selected_ids,
+        "projection_note": (
+            "3DMotion stores the physical camera model as Mei/omni when xi is present. "
+            "This OpenVINS checkout supports pinhole-radtan/equidistant, so kalibr_imucam_chain.yaml "
+            "exports a compatibility pinhole-radtan view from fu/fv/cu/cv/k1/k2/p1/p2. "
+            "For strict omni VIO, rectify frames to a virtual pinhole camera or extend OpenVINS camera models."
+        ),
         "warning": "T_H_C is used as T_imu_cam assuming headset frame H equals the OpenVINS IMU frame. Replace this after IMU-camera extrinsic calibration.",
     }
     (output_dir / "openvins_config_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
 
 
-def _write_estimator_config(path: Path, template_config_dir: Path | None) -> None:
+def _write_estimator_config(path: Path, template_config_dir: Path | None, *, camera_count: int) -> None:
+    max_cameras = max(1, int(camera_count))
     if template_config_dir is not None:
         template = template_config_dir / "estimator_config.yaml"
         if template.exists():
             shutil.copyfile(template, path)
             text = path.read_text(encoding="utf-8")
             text = text.replace("use_stereo: true", "use_stereo: false")
-            text = text.replace("max_cameras: 2", "max_cameras: 1")
+            text = _replace_scalar_yaml_line(text, "max_cameras", str(max_cameras))
             text = _replace_scalar_yaml_line(text, "init_imu_thresh", "0.5")
             text = _replace_scalar_yaml_line(text, "fast_threshold", "10")
             text = _replace_scalar_yaml_line(text, "track_frequency", "15.0")
@@ -75,7 +90,7 @@ verbosity: "INFO"
 use_fej: true
 integration: "rk4"
 use_stereo: false
-max_cameras: 1
+max_cameras: {max_cameras}
 
 calib_cam_extrinsics: true
 calib_cam_intrinsics: true
@@ -124,7 +139,7 @@ use_mask: false
 
 relative_config_imu: "kalibr_imu_chain.yaml"
 relative_config_imucam: "kalibr_imucam_chain.yaml"
-""",
+""".format(max_cameras=max_cameras),
         encoding="utf-8",
     )
 
@@ -183,6 +198,10 @@ def _write_imucam_chain(path: Path, calibrations) -> None:
         data[f"cam{index}"] = {
             "T_imu_cam": calibration.T_H_C.as_matrix().tolist(),
             "cam_overlaps": [i for i in range(len(calibrations)) if i != index],
+            "source_camera_id": calibration.camera_id,
+            "source_camera_model": calibration.camera_model,
+            "source_projection_model": calibration.projection_model,
+            "source_xi": calibration.xi,
             "camera_model": "pinhole",
             "distortion_coeffs": [float(v) for v in distortion[:4]],
             "distortion_model": distortion_model,
@@ -219,7 +238,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate first-pass OpenVINS config files from 3DMotion camera calibration.")
     parser.add_argument("--cameras", default="configs/cameras.yaml", help="3DMotion camera calibration YAML.")
     parser.add_argument("--output-dir", default="configs/openvins/generated_head_vio", help="Output config directory.")
-    parser.add_argument("--camera-id", action="append", dest="camera_ids", help="Camera ID to include. Repeat for multiple cameras. Default: C0.")
+    parser.add_argument(
+        "--camera-id",
+        action="append",
+        dest="camera_ids",
+        help="Camera ID to include. Repeat for multiple cameras. Default priority: C1,C2,C0,C3.",
+    )
     parser.add_argument("--template-config-dir", default="open_vins/config/euroc_mav", help="Optional OpenVINS template config directory.")
     args = parser.parse_args()
 

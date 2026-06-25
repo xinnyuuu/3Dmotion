@@ -34,6 +34,22 @@ Visualization Manager:
       Shape: Axes
       Axes Length: 0.25
       Axes Radius: 0.02
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: Wrist Path
+      Topic:
+        Value: /motion/wrist_path
+      Color: 255; 185; 45
+      Line Style: Lines
+      Line Width: 0.04
+    - Class: rviz_default_plugins/Pose
+      Enabled: true
+      Name: Wrist Pose
+      Topic:
+        Value: /motion/wrist_pose
+      Shape: Axes
+      Axes Length: 0.18
+      Axes Radius: 0.015
     - Class: rviz_default_plugins/Image
       Enabled: false
       Name: C0 Image

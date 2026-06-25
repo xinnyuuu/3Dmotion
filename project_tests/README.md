@@ -23,3 +23,13 @@ project_tests/reports/session_YYYYMMDD_HHMMSS_quality.json
 ```
 
 `project_tests/reports/` 默认不提交，用来保存本地数据报告。
+
+## 手部传感器位置测试
+
+`sensor_position/` 放手部摄像头和 IMU 候选安装位的测试模板：
+
+- `candidate_matrix.csv`: 爪夹虎口上方、掌心内侧和小指侧候选位置矩阵。
+- `session_log_template.csv`: 每段真实 session 的记录表。
+- `scorecard_template.md`: 汇总评分、截图、视频和结论。
+
+长期需求说明见 `../docs/hand_sensor_position_requirements.md`。

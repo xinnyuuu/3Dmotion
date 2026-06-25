@@ -25,6 +25,9 @@
 7. `prototype_plan.md`
    - P0-P5 阶段目标和验收标准。未实现部分保留为骨架，不重复日常命令。
 
+8. `hand_sensor_position_requirements.md`
+   - 爪夹和普通精细手部动作的摄像头 / IMU 候选安装位、测试矩阵、评分规则和交付模板。
+
 ## 文档维护规则
 
 - 操作流程只写在 `system_workflow.md`，其它文档只保留必要引用。

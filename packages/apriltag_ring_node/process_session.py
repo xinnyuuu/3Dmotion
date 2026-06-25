@@ -142,6 +142,7 @@ def _estimate_frame_tags(
                 camera_matrix,
                 calibration.distortion,
                 calibration.distortion_model,
+                calibration.xi if calibration.uses_omni_projection else None,
             )
         )
     return poses

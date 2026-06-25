@@ -1,41 +1,68 @@
 # Headset camera calibration.
 #
-# Placeholder schema. Replace these placeholder intrinsics with
-# FourHeadIntrinsics/scripts/export_3dmotion_cameras_yaml.py after calibrating
-# the exact recording resolution.
+# Convention:
+#   T_H_C maps camera-frame points into headset frame H.
+#
+# Intrinsics below are Mei/omni calibration results. `xi` is part of the
+# projection model and must be preserved. OpenVINS in this repo currently only
+# supports pinhole-radtan/equidistant, so its config generator exports an
+# explicit compatibility view from these same values.
 
 camera_defaults:
   image_size: [1600, 1200]
-  camera_model: fisheye
-  distortion_model: equidistant
-  intrinsics:
-    - [800.0, 0.0, 800.0]
-    - [0.0, 800.0, 600.0]
-    - [0.0, 0.0, 1.0]
-  distortion:
-    - 0.0
-    - 0.0
-    - 0.0
-    - 0.0
+  camera_model: omni
+  projection_model: mei
+  distortion_model: radtan
+
+camera_priority:
+  # Main overlapping VIO cameras first, side cameras second.
+  - C1
+  - C2
+  - C0
+  - C3
 
 cameras:
   C0:
-    role: left_ear
-    # Convention: T_H_C maps camera-frame points into headset frame H.
-    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
+    role: left_side
+    xi: 1.868
+    reprojection_std_px: [0.643, 0.642]
+    rms_px: 0.908
+    intrinsics:
+      - [1364.8, 0.0, 795.6]
+      - [0.0, 1362.2, 594.0]
+      - [0.0, 0.0, 1.0]
+    distortion: [0.321, -0.929, 0.0003, 0.0006]
     T_H_C: null
   C1:
-    role: front_left
-    # Convention: T_H_C maps camera-frame points into headset frame H.
-    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
+    role: left_front
+    xi: 1.773
+    reprojection_std_px: [0.649, 0.729]
+    rms_px: 0.976
+    intrinsics:
+      - [1628.9, 0.0, 915.9]
+      - [0.0, 1636.4, 625.4]
+      - [0.0, 0.0, 1.0]
+    distortion: [0.214, -0.723, 0.0007, -0.0009]
     T_H_C: null
   C2:
-    role: front_right
-    # Convention: T_H_C maps camera-frame points into headset frame H.
-    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
+    role: right_front
+    xi: 1.82
+    reprojection_std_px: [0.679, 0.729]
+    rms_px: 0.996
+    intrinsics:
+      - [1650.8, 0.0, 841.6]
+      - [0.0, 1657.2, 633.7]
+      - [0.0, 0.0, 1.0]
+    distortion: [0.245, -0.716, 0.0011, 0.0001]
     T_H_C: null
   C3:
-    role: right_ear
-    # Convention: T_H_C maps camera-frame points into headset frame H.
-    # May be a 4x4 matrix or [x, y, z, yaw_deg, pitch_deg, roll_deg].
+    role: right_side
+    xi: 1.95
+    reprojection_std_px: [0.558, 0.601]
+    rms_px: 0.820
+    intrinsics:
+      - [1396.4, 0.0, 807.3]
+      - [0.0, 1400.9, 568.9]
+      - [0.0, 0.0, 1.0]
+    distortion: [0.409, -1.119, 0.0007, -0.0005]
     T_H_C: null

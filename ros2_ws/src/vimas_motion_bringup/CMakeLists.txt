@@ -6,6 +6,7 @@ find_package(ament_cmake REQUIRED)
 install(
   PROGRAMS
     scripts/head_vio_visualizer.py
+    scripts/motion_replay_visualizer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

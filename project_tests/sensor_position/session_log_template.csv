@@ -1,0 +1,3 @@
+session_id,candidate_id,repeat_index,session_dir,date,operator,camera_profile,imu_profile,action_set,validate_session_status,hand_visibility_score,claw_contact_score,vio_background_score,image_quality_score,mechanical_score,sync_imu_score,conclusion,screenshot_path,video_clip_path,notes
+CLAW-H080-P45_R1,CLAW-H080-P45,1,data/raw/session_YYYYMMDD_HHMMSS,YYYY-MM-DD,lxy,MJPG_1600x1200_25fps,gyro_accel_200hz,standard_claw_sequence,pending,,,,,,,pending,,,
+FINE-B-H050_R1,FINE-B-H050,1,data/raw/session_YYYYMMDD_HHMMSS,YYYY-MM-DD,lxy,MJPG_1600x1200_25fps,optional,standard_fine_hand_sequence,pending,,,,,,,pending,,,

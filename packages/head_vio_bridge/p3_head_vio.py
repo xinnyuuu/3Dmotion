@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-from packages.head_vio_bridge.openvins_config import generate_openvins_config
+from packages.head_vio_bridge.openvins_config import DEFAULT_HEAD_CAMERA_IDS, generate_openvins_config
 from packages.head_vio_bridge.openvins_session import prepare_openvins_session
 
 
@@ -92,43 +92,47 @@ def prepare_p3_head_vio(
     config_dir: Path | None = None,
     cameras_path: Path = Path("configs/cameras.yaml"),
     template_config_dir: Path | None = Path("open_vins/config/euroc_mav"),
-    camera_id: str = "C0",
+    camera_id: str | None = None,
+    camera_ids: list[str] | None = None,
     imu_slot: str = "head_imu",
     fail_on_not_ready: bool = True,
 ) -> dict:
-    """Prepare one session for the P3a OpenVINS C0 + head_imu path."""
+    """Prepare one session for the OpenVINS head camera rig + head_imu path."""
 
     session_dir = session_dir.resolve()
-    output_dir = output_dir or Path("data/processed") / session_dir.name / "openvins_c0"
+    selected_camera_ids = _resolve_selected_camera_ids(camera_id=camera_id, camera_ids=camera_ids)
+    output_dir = output_dir or Path("data/processed") / session_dir.name / "openvins_head"
     config_dir = config_dir or output_dir / "config"
 
-    readiness = check_head_vio_readiness(session_dir, camera_id=camera_id, imu_slot=imu_slot)
+    readiness = _check_head_vio_readiness_for_cameras(session_dir, camera_ids=selected_camera_ids, imu_slot=imu_slot)
     if fail_on_not_ready and not readiness["ready_for_p3a"]:
         return {
             "session_dir": str(session_dir),
             "ready_for_p3a": False,
+            "camera_ids": selected_camera_ids,
             "readiness": readiness,
             "steps": {
-                "skipped": "P3a readiness failed. Fix the session before exporting OpenVINS inputs.",
+                "skipped": "Head VIO readiness failed. Fix the session before exporting OpenVINS inputs.",
             },
         }
 
     openvins_session = prepare_openvins_session(
         session_dir=session_dir,
         output_dir=output_dir,
-        camera_ids=[camera_id],
+        camera_ids=selected_camera_ids,
         imu_slot=imu_slot,
     )
     openvins_config = generate_openvins_config(
         cameras_path=cameras_path,
         output_dir=config_dir,
-        camera_ids=[camera_id],
+        camera_ids=selected_camera_ids,
         template_config_dir=template_config_dir,
     )
 
     summary = {
         "session_dir": str(session_dir),
         "ready_for_p3a": readiness["ready_for_p3a"],
+        "camera_ids": selected_camera_ids,
         "readiness": readiness,
         "steps": {
             "openvins_session": openvins_session,
@@ -143,13 +147,42 @@ def prepare_p3_head_vio(
             },
         },
         "warning": (
-            "P3a treats headset frame H as the head IMU frame I. This is only a prototype "
-            "until real IMU-camera and IMU-head extrinsics are calibrated."
+            "Head VIO currently treats headset frame H as the head IMU frame I_H unless calibrated "
+            "IMU-camera and IMU-head extrinsics are provided."
         ),
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "p3_head_vio_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
+
+
+def _resolve_selected_camera_ids(*, camera_id: str | None, camera_ids: list[str] | None) -> list[str]:
+    if camera_ids:
+        return [str(value) for value in camera_ids]
+    if camera_id:
+        return [str(camera_id)]
+    return list(DEFAULT_HEAD_CAMERA_IDS)
+
+
+def _check_head_vio_readiness_for_cameras(session_dir: Path, *, camera_ids: list[str], imu_slot: str) -> dict:
+    reports = [
+        check_head_vio_readiness(session_dir, camera_id=camera_id, imu_slot=imu_slot)
+        for camera_id in camera_ids
+    ]
+    return {
+        "session_dir": str(session_dir.resolve()),
+        "ready_for_p3a": all(report["ready_for_p3a"] for report in reports),
+        "camera_ids": camera_ids,
+        "camera_reports": reports,
+        "p3a_frame_convention": reports[0]["p3a_frame_convention"] if reports else {},
+        "hardware_requirements": reports[0]["hardware_requirements"] if reports else [],
+        "next_steps": [
+            step
+            for report in reports
+            for step in report.get("next_steps", [])
+            if step
+        ],
+    }
 
 
 def _resolve_cameras_dir(session_dir: Path) -> Path:
@@ -392,13 +425,18 @@ def readiness_main() -> None:
 
 
 def prepare_main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare P3a OpenVINS C0 + head_imu inputs and config.")
+    parser = argparse.ArgumentParser(description="Prepare OpenVINS head camera rig + head_imu inputs and config.")
     parser.add_argument("--session-dir", required=True)
-    parser.add_argument("--output-dir", help="Default: data/processed/<session_name>/openvins_c0")
+    parser.add_argument("--output-dir", help="Default: data/processed/<session_name>/openvins_head")
     parser.add_argument("--config-dir", help="Default: <output-dir>/config")
     parser.add_argument("--cameras", default="configs/cameras.yaml")
     parser.add_argument("--template-config-dir", default="open_vins/config/euroc_mav", help="OpenVINS template config directory used for estimator_config.yaml.")
-    parser.add_argument("--camera-id", default="C0")
+    parser.add_argument(
+        "--camera-id",
+        action="append",
+        dest="camera_ids",
+        help="Camera ID to include. Repeat for multiple cameras. Default: C1,C2,C0,C3.",
+    )
     parser.add_argument("--imu-slot", default="head_imu")
     parser.add_argument("--allow-not-ready", action="store_true")
     args = parser.parse_args()
@@ -409,7 +447,7 @@ def prepare_main() -> None:
         config_dir=Path(args.config_dir) if args.config_dir else None,
         cameras_path=Path(args.cameras),
         template_config_dir=Path(args.template_config_dir) if args.template_config_dir else None,
-        camera_id=args.camera_id,
+        camera_ids=args.camera_ids,
         imu_slot=args.imu_slot,
         fail_on_not_ready=not args.allow_not_ready,
     )

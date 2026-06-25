@@ -7,6 +7,7 @@ from pathlib import Path
 from packages.apriltag_ring_node.process_session import process_session as process_apriltag_session
 from packages.head_vio_bridge.openvins_config import generate_openvins_config
 from packages.head_vio_bridge.openvins_session import prepare_openvins_session
+from packages.session_tools.motion_fusion import fuse_motion_session
 from packages.session_tools.validate_session import validate_session
 
 
@@ -19,6 +20,8 @@ def postprocess_session(
     run_apriltag: bool = False,
     run_openvins: bool = False,
     generate_config: bool = False,
+    fuse_motion: bool = False,
+    head_pose_path: Path | None = None,
 ) -> dict:
     session_dir = session_dir.resolve()
     if output_root is None:
@@ -66,6 +69,13 @@ def postprocess_session(
             camera_ids=camera_ids,
         )
 
+    if fuse_motion:
+        summary["steps"]["motion_fusion"] = fuse_motion_session(
+            session_dir=session_dir,
+            output_root=output_root,
+            head_pose_path=head_pose_path,
+        )
+
     _write_summary(output_root, summary)
     return summary
 
@@ -80,10 +90,12 @@ def main() -> None:
     parser.add_argument("--output-root", default=None, help="Output root for all generated files. Default: data/processed/<session_name>.")
     parser.add_argument("--cameras", default="configs/cameras.yaml", help="Camera calibration YAML.")
     parser.add_argument("--bracelet", default="configs/bracelet.yaml", help="Bracelet geometry YAML.")
-    parser.add_argument("--camera-id", action="append", dest="camera_ids", help="Camera ID for OpenVINS export/config. Repeat for multiple cameras. Default: C0.")
+    parser.add_argument("--camera-id", action="append", dest="camera_ids", help="Camera ID for OpenVINS export/config. Repeat for multiple cameras. Default: C1,C2,C0,C3.")
     parser.add_argument("--apriltag", action="store_true", help="Run offline wrist AprilTag processing.")
     parser.add_argument("--openvins", action="store_true", help="Prepare OpenVINS image/IMU JSONL streams.")
     parser.add_argument("--openvins-config", action="store_true", help="Generate first-pass OpenVINS config files.")
+    parser.add_argument("--fuse-motion", action="store_true", help="Fuse head_pose.jsonl, wrist_visual_pose.jsonl, and wrist_imu.jsonl.")
+    parser.add_argument("--head-pose", help="Optional head_pose.jsonl path for --fuse-motion.")
     args = parser.parse_args()
 
     summary = postprocess_session(
@@ -95,6 +107,8 @@ def main() -> None:
         run_apriltag=args.apriltag,
         run_openvins=args.openvins,
         generate_config=args.openvins_config,
+        fuse_motion=args.fuse_motion,
+        head_pose_path=Path(args.head_pose) if args.head_pose else None,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

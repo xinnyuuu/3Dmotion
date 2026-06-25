@@ -78,6 +78,7 @@ def estimate_tag_pose(
     camera_matrix: np.ndarray,
     dist_coeffs: np.ndarray,
     distortion_model: str = "radtan",
+    xi: float | None = None,
 ) -> TagPose:
     import cv2
 
@@ -88,12 +89,14 @@ def estimate_tag_pose(
         camera_matrix,
         dist_coeffs,
         distortion_model,
+        xi,
     )
+    pnp_camera_matrix = np.eye(3, dtype=np.float64) if _is_omni_distortion(distortion_model, xi) else camera_matrix
     try:
         ok, rvecs, tvecs = cv2.solvePnPGeneric(
             object_points,
             pnp_image_points,
-            camera_matrix,
+            pnp_camera_matrix,
             pnp_dist_coeffs,
             flags=cv2.SOLVEPNP_IPPE_SQUARE,
         )[:3]
@@ -120,6 +123,7 @@ def estimate_tag_pose(
                         camera_matrix,
                         dist_coeffs,
                         distortion_model,
+                        xi,
                     ),
                 )
             )
@@ -127,12 +131,12 @@ def estimate_tag_pose(
         success, rvec, tvec = cv2.solvePnP(
             object_points,
             pnp_image_points,
-            camera_matrix,
+            pnp_camera_matrix,
             pnp_dist_coeffs,
             flags=cv2.SOLVEPNP_IPPE_SQUARE,
         )
         if not success:
-            success, rvec, tvec = cv2.solvePnP(object_points, pnp_image_points, camera_matrix, pnp_dist_coeffs)
+            success, rvec, tvec = cv2.solvePnP(object_points, pnp_image_points, pnp_camera_matrix, pnp_dist_coeffs)
         if not success:
             raise RuntimeError(f"solvePnP failed for tag {detection.tag_id}.")
         candidates.append(
@@ -148,6 +152,7 @@ def estimate_tag_pose(
                     camera_matrix,
                     dist_coeffs,
                     distortion_model,
+                    xi,
                 ),
             )
         )
@@ -175,10 +180,21 @@ def reprojection_error(
     camera_matrix: np.ndarray,
     dist_coeffs: np.ndarray,
     distortion_model: str = "radtan",
+    xi: float | None = None,
 ) -> float:
     import cv2
 
-    if _is_fisheye_distortion(distortion_model):
+    if _is_omni_distortion(distortion_model, xi):
+        _require_omnidir(cv2)
+        projected, _ = cv2.omnidir.projectPoints(
+            object_points.reshape(-1, 1, 3),
+            rvec,
+            tvec,
+            camera_matrix,
+            float(xi),
+            dist_coeffs.reshape(-1, 1),
+        )
+    elif _is_fisheye_distortion(distortion_model):
         projected, _ = cv2.fisheye.projectPoints(
             object_points.reshape(-1, 1, 3),
             rvec,
@@ -196,7 +212,21 @@ def _pnp_points_and_distortion(
     camera_matrix: np.ndarray,
     dist_coeffs: np.ndarray,
     distortion_model: str,
+    xi: float | None,
 ) -> tuple[np.ndarray, np.ndarray]:
+    if _is_omni_distortion(distortion_model, xi):
+        import cv2
+
+        _require_omnidir(cv2)
+        undistorted = cv2.omnidir.undistortPoints(
+            image_points.reshape(-1, 1, 2),
+            camera_matrix,
+            dist_coeffs.reshape(-1, 1),
+            float(xi),
+            np.eye(3, dtype=np.float64),
+        )
+        return undistorted.reshape(-1, 2), np.zeros((4, 1), dtype=np.float64)
+
     if not _is_fisheye_distortion(distortion_model):
         return image_points, dist_coeffs
 
@@ -213,6 +243,18 @@ def _pnp_points_and_distortion(
 
 def _is_fisheye_distortion(distortion_model: str) -> bool:
     return distortion_model.lower() in {"equidistant", "opencv_fisheye", "fisheye"}
+
+
+def _is_omni_distortion(distortion_model: str, xi: float | None) -> bool:
+    return xi is not None and distortion_model.lower() in {"radtan", "mei", "omni", "omnidir"}
+
+
+def _require_omnidir(cv2) -> None:
+    if not hasattr(cv2, "omnidir"):
+        raise RuntimeError(
+            "This camera uses Mei/omni intrinsics with xi, but cv2.omnidir is unavailable. "
+            "Install an OpenCV contrib build with omnidir support, or rectify the images to a virtual pinhole camera first."
+        )
 
 
 def _opencv_apriltag_dictionary(cv2, family: str):

@@ -6,9 +6,12 @@ from pathlib import Path
 from packages.head_vio_bridge.p3_head_vio import check_head_vio_readiness, prepare_p3_head_vio
 from packages.head_vio_bridge.process_head_vio_session import process_head_vio_session
 from packages.head_vio_bridge.euroc_session import prepare_euroc_openvins_session
+from packages.head_vio_bridge.openvins_config import generate_openvins_config
 from packages.head_vio_bridge.openvins_session import prepare_openvins_session
 from packages.head_vio_bridge.openvins_session import _filter_rosbag_records
+from packages.apriltag_ring_node.config import load_camera_calibrations, load_camera_priority
 from packages.capture_dashboard import server as dashboard_server
+from packages.session_tools.motion_fusion import fuse_motion_session
 from packages.session_tools.postprocess_session import postprocess_session
 from packages.session_tools.validate_session import validate_session
 
@@ -63,6 +66,52 @@ def test_prepare_openvins_session_exports_image_and_imu_streams(tmp_path: Path) 
     assert image_record["image_path"].endswith("cameras/C0/00000000.jpg")
     assert imu_record["topic"] == "/imu0"
     assert imu_record["sensor_id"] == "head_imu"
+
+
+def test_camera_config_preserves_omni_intrinsics() -> None:
+    calibrations = load_camera_calibrations(Path("configs/cameras.yaml"))
+    priority = load_camera_priority(Path("configs/cameras.yaml"))
+
+    assert priority == ["C1", "C2", "C0", "C3"]
+    assert calibrations["C1"].projection_model == "mei"
+    assert calibrations["C1"].uses_omni_projection is True
+    assert calibrations["C1"].xi == 1.773
+    assert calibrations["C1"].intrinsics[0, 0] == 1628.9
+    assert calibrations["C3"].distortion.reshape(-1).tolist()[:2] == [0.409, -1.119]
+
+
+def test_openvins_config_exports_four_camera_compatibility_view(tmp_path: Path) -> None:
+    output = tmp_path / "openvins_config"
+
+    summary = generate_openvins_config(
+        cameras_path=Path("configs/cameras.yaml"),
+        output_dir=output,
+        template_config_dir=None,
+    )
+
+    assert summary["camera_ids"] == ["C1", "C2", "C0", "C3"]
+    assert "Mei/omni" in summary["projection_note"]
+    estimator_text = (output / "estimator_config.yaml").read_text(encoding="utf-8")
+    assert "max_cameras: 4" in estimator_text
+    imucam_text = (output / "kalibr_imucam_chain.yaml").read_text(encoding="utf-8")
+    assert "source_xi: 1.773" in imucam_text
+    assert "source_projection_model: mei" in imucam_text
+
+
+def test_prepare_openvins_session_defaults_to_four_head_cameras(tmp_path: Path) -> None:
+    session = _make_quad_session(tmp_path)
+    output = tmp_path / "processed" / "openvins_session"
+
+    summary = prepare_openvins_session(session, output)
+    image_records = _read_jsonl(output / "images.jsonl")
+
+    assert summary["openvins_topics"]["cameras"] == {
+        "C1": "/cam0/image_raw",
+        "C2": "/cam1/image_raw",
+        "C0": "/cam2/image_raw",
+        "C3": "/cam3/image_raw",
+    }
+    assert [record["camera_id"] for record in image_records[:4]] == ["C1", "C2", "C0", "C3"]
 
 
 def test_postprocess_session_skips_when_camera_replay_not_ready(tmp_path: Path) -> None:
@@ -154,6 +203,56 @@ def test_filter_rosbag_records_limits_duration_and_strides_images() -> None:
     assert imus[-1]["timestamp_unix_ns"] == 3_000_000_000
     assert summary["window_counts"] == {"images": 3, "imu_samples": 5}
     assert summary["output_counts"] == {"images": 2, "imu_samples": 5}
+
+
+def test_fuse_motion_session_composes_head_and_wrist_pose(tmp_path: Path) -> None:
+    session = _make_session(tmp_path, with_frame=True, with_head_imu=True)
+    imus = session / "imus"
+    _write_jsonl(
+        imus / "wrist_imu.jsonl",
+        [
+            {
+                "sensor_id": "wrist_imu",
+                "timestamp_unix_ns": 1_000_000_000,
+                "timestamp_monotonic_ns": 1_000_000_000,
+                "accel_mps2": [0.0, 0.0, 9.81],
+                "gyro_radps": [0.1, 0.2, 0.3],
+            }
+        ],
+    )
+    output = tmp_path / "processed" / session.name
+    wrist_visual = output / "wrist_visual"
+    wrist_visual.mkdir(parents=True)
+    _write_jsonl(
+        output / "head_pose.jsonl",
+        [
+            {
+                "timestamp_unix_ns": 1_000_000_000,
+                "timestamp_monotonic_ns": 1_000_000_000,
+                "T_W_H": _pose_dict([1.0, 0.0, 0.0]),
+            }
+        ],
+    )
+    _write_jsonl(
+        wrist_visual / "wrist_visual_pose.jsonl",
+        [
+            {
+                "timestamp_unix_ns": 1_000_000_000,
+                "timestamp_monotonic_ns": 1_000_000_000,
+                "T_H_B": _pose_dict([0.0, 2.0, 0.0]),
+            }
+        ],
+    )
+
+    summary = fuse_motion_session(session_dir=session, output_root=output)
+    motion_record = _read_jsonl(output / "motion" / "motion_frame.jsonl")[0]
+    wrist_record = _read_jsonl(output / "motion" / "wrist_fused_pose.jsonl")[0]
+
+    assert summary["counts"]["motion_frames"] == 1
+    assert motion_record["head"]["position"] == [1.0, 0.0, 0.0]
+    assert motion_record["wrist"]["position"] == [1.0, 2.0, 0.0]
+    assert motion_record["wrist"]["angular_velocity"] == [0.1, 0.2, 0.3]
+    assert wrist_record["alignment"]["wrist_imu_ok"] is True
 
 
 def test_prepare_euroc_openvins_session_exports_stereo_layout(tmp_path: Path) -> None:
@@ -275,6 +374,46 @@ def _make_p3_session(tmp_path: Path) -> Path:
     return session
 
 
+def _make_quad_session(tmp_path: Path) -> Path:
+    session = tmp_path / "session_20260612_030000"
+    cameras = session / "cameras"
+    imus = session / "imus"
+    imus.mkdir(parents=True)
+    (session / "session_manifest.json").write_text("{}\n", encoding="utf-8")
+    records = []
+    for camera_id in ["C0", "C1", "C2", "C3"]:
+        (cameras / camera_id).mkdir(parents=True)
+        filename = "00000000.jpg"
+        (cameras / camera_id / filename).write_bytes(b"fake image")
+        records.append(
+            {
+                "group_id": 0,
+                "camera_id": camera_id,
+                "timestamp_unix_ns": 1_000_000_000,
+                "timestamp_monotonic_ns": 1_000_000_000,
+                "timestamp_source": "host_retrieve",
+                "skew_us": 0.0,
+                "image_path": f"{camera_id}/{filename}",
+                "width": 1600,
+                "height": 1200,
+            }
+        )
+    _write_jsonl(cameras / "frames.jsonl", records)
+    _write_jsonl(
+        imus / "head_imu.jsonl",
+        [
+            {
+                "sensor_id": "head_imu",
+                "timestamp_unix_ns": 1_000_000_000,
+                "timestamp_monotonic_ns": 1_000_000_000,
+                "accel_mps2": [0.0, 0.0, 9.81],
+                "gyro_radps": [0.0, 0.0, 0.0],
+            }
+        ],
+    )
+    return session
+
+
 def _make_euroc_mav0(tmp_path: Path) -> Path:
     mav0 = tmp_path / "mav0"
     for camera_id in ["cam0", "cam1"]:
@@ -310,3 +449,16 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _pose_dict(position: list[float]) -> dict:
+    return {
+        "position": position,
+        "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "matrix": [
+            [1.0, 0.0, 0.0, position[0]],
+            [0.0, 1.0, 0.0, position[1]],
+            [0.0, 0.0, 1.0, position[2]],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }

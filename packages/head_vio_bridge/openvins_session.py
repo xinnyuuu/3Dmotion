@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from packages.head_vio_bridge.openvins_config import DEFAULT_HEAD_CAMERA_IDS
+
 
 @dataclass
 class OpenVinsImageRecord:
@@ -53,7 +55,7 @@ def prepare_openvins_session(
         raise FileNotFoundError(f"Missing head IMU log: {imu_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    selected_camera_ids = set(camera_ids or ["C0"])
+    selected_camera_ids = list(camera_ids or DEFAULT_HEAD_CAMERA_IDS)
     image_records = _load_image_records(frames_path, cameras_dir, selected_camera_ids)
     imu_records = _load_imu_records(imu_path)
 
@@ -62,7 +64,7 @@ def prepare_openvins_session(
     if not imu_records:
         raise RuntimeError(f"No IMU samples found in {imu_path}")
 
-    camera_topics = {camera_id: f"/cam{index}/image_raw" for index, camera_id in enumerate(sorted(selected_camera_ids))}
+    camera_topics = {camera_id: f"/cam{index}/image_raw" for index, camera_id in enumerate(selected_camera_ids)}
     imu_topic = "/imu0"
 
     image_output = output_dir / "images.jsonl"
@@ -292,20 +294,22 @@ def _resolve_cameras_dir(session_dir: Path) -> Path:
     return session_dir
 
 
-def _load_image_records(frames_path: Path, cameras_dir: Path, camera_ids: set[str]) -> list[dict]:
+def _load_image_records(frames_path: Path, cameras_dir: Path, camera_ids: list[str]) -> list[dict]:
+    camera_id_set = set(camera_ids)
     records = []
     with frames_path.open("r", encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             record = json.loads(line)
-            if record.get("camera_id") not in camera_ids:
+            if record.get("camera_id") not in camera_id_set:
                 continue
             image_path = cameras_dir / record["image_path"]
             if not image_path.exists():
                 raise FileNotFoundError(f"Frame image listed in frames.jsonl does not exist: {image_path}")
             records.append(record)
-    records.sort(key=lambda item: int(item["timestamp_monotonic_ns"]))
+    order = {camera_id: index for index, camera_id in enumerate(camera_ids)}
+    records.sort(key=lambda item: (int(item["timestamp_monotonic_ns"]), order.get(str(item["camera_id"]), 999)))
     return records
 
 
@@ -388,7 +392,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare a recorded session for the next OpenVINS rosbag2 conversion step.")
     parser.add_argument("--session-dir", required=True, help="Dashboard session directory, e.g. data/raw/session_YYYYMMDD_HHMMSS.")
     parser.add_argument("--output-dir", default="data/processed/openvins_session", help="Output directory.")
-    parser.add_argument("--camera-id", action="append", dest="camera_ids", help="Camera ID to export. Repeat for multiple cameras. Default: C0.")
+    parser.add_argument(
+        "--camera-id",
+        action="append",
+        dest="camera_ids",
+        help="Camera ID to export. Repeat for multiple cameras. Default priority: C1,C2,C0,C3.",
+    )
     parser.add_argument("--imu-slot", default="head_imu", help="IMU slot JSONL under session/imus. Default: head_imu.")
     args = parser.parse_args()
 

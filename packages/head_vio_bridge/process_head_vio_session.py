@@ -5,6 +5,7 @@ import json
 import shutil
 from pathlib import Path
 
+from packages.head_vio_bridge.openvins_config import DEFAULT_HEAD_CAMERA_IDS
 from packages.head_vio_bridge.openvins_session import write_openvins_rosbag2
 from packages.head_vio_bridge.p3_head_vio import prepare_p3_head_vio
 
@@ -15,7 +16,8 @@ def process_head_vio_session(
     output_dir: Path | None = None,
     cameras_path: Path = Path("configs/cameras.yaml"),
     template_config_dir: Path | None = Path("open_vins/config/euroc_mav"),
-    camera_id: str = "C0",
+    camera_id: str | None = None,
+    camera_ids: list[str] | None = None,
     imu_slot: str = "head_imu",
     write_rosbag: bool = True,
     overwrite_rosbag: bool = True,
@@ -31,7 +33,8 @@ def process_head_vio_session(
     """
 
     session_dir = session_dir.resolve()
-    output_dir = output_dir or Path("data/processed") / session_dir.name / "openvins_c0"
+    selected_camera_ids = camera_ids or ([camera_id] if camera_id else list(DEFAULT_HEAD_CAMERA_IDS))
+    output_dir = output_dir or Path("data/processed") / session_dir.name / "openvins_head"
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -42,6 +45,7 @@ def process_head_vio_session(
         cameras_path=cameras_path,
         template_config_dir=template_config_dir,
         camera_id=camera_id,
+        camera_ids=selected_camera_ids,
         imu_slot=imu_slot,
         fail_on_not_ready=fail_on_not_ready,
     )
@@ -62,15 +66,15 @@ def process_head_vio_session(
         "output_dir": str(output_dir),
         "ready_for_p3a": bool(p3_summary.get("ready_for_p3a")),
         "ok": bool(p3_summary.get("ready_for_p3a")) and (not write_rosbag or rosbag_summary.get("ok", False)),
-        "camera_id": camera_id,
+        "camera_ids": selected_camera_ids,
         "imu_slot": imu_slot,
         "steps": {
             "p3_head_vio": p3_summary,
             "rosbag2": rosbag_summary,
         },
-        "next_commands": _next_commands(output_dir),
+        "next_commands": _next_commands(output_dir, camera_count=len(selected_camera_ids)),
         "notes": [
-            "P3a only exports C0 + head_imu. Wrist IMU and AprilTag are not used by head VIO.",
+            "Head VIO exports the selected head cameras + head_imu. Wrist IMU and AprilTag are fused later.",
             "Run this command from a ROS2-sourced terminal if you want rosbag2 to be written in the same step.",
             "RViz shows head_imu as the temporary head frame: H := I_H.",
         ],
@@ -144,7 +148,7 @@ def _remove_existing_rosbag(*, output_dir: Path, bag_dir: Path) -> None:
         summary_path.unlink()
 
 
-def _next_commands(output_dir: Path) -> dict:
+def _next_commands(output_dir: Path, *, camera_count: int) -> dict:
     config_path = output_dir / "config" / "estimator_config.yaml"
     bag_dir = output_dir / "rosbag2"
     return {
@@ -152,7 +156,7 @@ def _next_commands(output_dir: Path) -> dict:
             "source scripts/source_openvins_ros2.bash\n"
             "ros2 launch ov_msckf subscribe.launch.py "
             f"config_path:={config_path} "
-            "max_cameras:=1 use_stereo:=false"
+            f"max_cameras:={camera_count} use_stereo:=false"
         ),
         "play_rosbag2": (
             "source /opt/ros/humble/setup.bash\n"
@@ -172,10 +176,15 @@ def main() -> None:
         description="One-command P3a processing: raw session -> OpenVINS inputs/config -> optional rosbag2."
     )
     parser.add_argument("--session-dir", required=True, help="Dashboard raw session, e.g. data/raw/session_YYYYMMDD_HHMMSS.")
-    parser.add_argument("--output-dir", help="Default: data/processed/<session_name>/openvins_c0.")
+    parser.add_argument("--output-dir", help="Default: data/processed/<session_name>/openvins_head.")
     parser.add_argument("--cameras", default="configs/cameras.yaml")
     parser.add_argument("--template-config-dir", default="open_vins/config/euroc_mav")
-    parser.add_argument("--camera-id", default="C0")
+    parser.add_argument(
+        "--camera-id",
+        action="append",
+        dest="camera_ids",
+        help="Camera ID to include. Repeat for multiple cameras. Default: C1,C2,C0,C3.",
+    )
     parser.add_argument("--imu-slot", default="head_imu")
     parser.add_argument("--no-rosbag2", action="store_true", help="Only write JSONL/config; skip rosbag2 export.")
     parser.add_argument("--keep-existing-rosbag2", action="store_true", help="Do not delete an existing rosbag2 directory before export.")
@@ -190,7 +199,7 @@ def main() -> None:
         output_dir=Path(args.output_dir) if args.output_dir else None,
         cameras_path=Path(args.cameras),
         template_config_dir=Path(args.template_config_dir) if args.template_config_dir else None,
-        camera_id=args.camera_id,
+        camera_ids=args.camera_ids,
         imu_slot=args.imu_slot,
         write_rosbag=not args.no_rosbag2,
         overwrite_rosbag=not args.keep_existing_rosbag2,

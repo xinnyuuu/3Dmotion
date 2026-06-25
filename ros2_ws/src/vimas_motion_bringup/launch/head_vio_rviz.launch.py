@@ -18,6 +18,7 @@ def generate_launch_description() -> LaunchDescription:
     child_frame = LaunchConfiguration("child_frame")
     output_pose_topic = LaunchConfiguration("output_pose_topic")
     output_path_topic = LaunchConfiguration("output_path_topic")
+    output_jsonl = LaunchConfiguration("output_jsonl")
 
     return LaunchDescription(
         [
@@ -27,6 +28,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("child_frame", default_value="head_imu"),
             DeclareLaunchArgument("output_pose_topic", default_value="/motion/head_pose"),
             DeclareLaunchArgument("output_path_topic", default_value="/motion/head_path"),
+            DeclareLaunchArgument("output_jsonl", default_value=""),
             Node(
                 package="vimas_motion_bringup",
                 executable="head_vio_visualizer.py",
@@ -40,6 +42,7 @@ def generate_launch_description() -> LaunchDescription:
                         "child_frame": child_frame,
                         "output_pose_topic": output_pose_topic,
                         "output_path_topic": output_path_topic,
+                        "output_jsonl": output_jsonl,
                     }
                 ],
             ),
