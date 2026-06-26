@@ -23,6 +23,7 @@ def generate_openvins_config(
     output_dir: Path,
     camera_ids: list[str] | None = None,
     template_config_dir: Path | None = None,
+    imu_calibration_path: Path | None = Path("configs/imu_calibration.yaml"),
 ) -> dict:
     calibrations = load_camera_calibrations(cameras_path)
     configured_priority = load_camera_priority(cameras_path)
@@ -40,7 +41,8 @@ def generate_openvins_config(
     imucam_path = output_dir / "kalibr_imucam_chain.yaml"
 
     _write_estimator_config(estimator_path, template_config_dir, camera_count=len(selected_ids))
-    _write_imu_chain(imu_path)
+    imu_calibration = _load_imu_calibration(imu_calibration_path)
+    _write_imu_chain(imu_path, imu_calibration.get("head_imu", {}))
     _write_imucam_chain(imucam_path, [calibrations[camera_id] for camera_id in selected_ids])
 
     summary = {
@@ -54,6 +56,11 @@ def generate_openvins_config(
         "topics": {
             "imu": "/imu0",
             "cameras": {camera_id: f"/cam{index}/image_raw" for index, camera_id in enumerate(selected_ids)},
+        },
+        "imu_calibration": {
+            "path": str(imu_calibration_path) if imu_calibration_path is not None else None,
+            "head_imu_source": imu_calibration.get("head_imu", {}).get("source"),
+            "head_imu_sample_count": imu_calibration.get("head_imu", {}).get("sample_count"),
         },
         "camera_priority": selected_ids,
         "projection_note": (
@@ -144,14 +151,19 @@ relative_config_imucam: "kalibr_imucam_chain.yaml"
     )
 
 
-def _write_imu_chain(path: Path) -> None:
+def _write_imu_chain(path: Path, head_imu_calibration: dict | None = None) -> None:
+    head_imu_calibration = head_imu_calibration or {}
     data = {
         "imu0": {
             "T_i_b": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-            "accelerometer_noise_density": 0.02,
-            "accelerometer_random_walk": 0.002,
-            "gyroscope_noise_density": 0.0017,
-            "gyroscope_random_walk": 0.0002,
+            "accelerometer_noise_density": float(head_imu_calibration.get("accelerometer_noise_density", 0.02)),
+            "accelerometer_random_walk": float(head_imu_calibration.get("accelerometer_random_walk", 0.002)),
+            "gyroscope_noise_density": float(head_imu_calibration.get("gyroscope_noise_density", 0.0017)),
+            "gyroscope_random_walk": float(head_imu_calibration.get("gyroscope_random_walk", 0.0002)),
+            "accel_bias_mps2": head_imu_calibration.get("accel_bias_mps2", [0.0, 0.0, 0.0]),
+            "gyro_bias_radps": head_imu_calibration.get("gyro_bias_radps", [0.0, 0.0, 0.0]),
+            "source_imu_id": "head_imu",
+            "source_calibration": head_imu_calibration.get("source"),
             "rostopic": "/imu0",
             "time_offset": 0.0,
             "update_rate": 100.0,
@@ -164,6 +176,17 @@ def _write_imu_chain(path: Path) -> None:
         }
     }
     _write_opencv_yaml(path, data)
+
+
+def _load_imu_calibration(path: Path | None) -> dict:
+    if path is None or not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    imus = data.get("imus") or {}
+    if not isinstance(imus, dict):
+        return {}
+    return imus
 
 
 def _replace_scalar_yaml_line(text: str, key: str, value: str) -> str:
@@ -245,6 +268,7 @@ def main() -> None:
         help="Camera ID to include. Repeat for multiple cameras. Default priority: C1,C2,C0,C3.",
     )
     parser.add_argument("--template-config-dir", default="open_vins/config/euroc_mav", help="Optional OpenVINS template config directory.")
+    parser.add_argument("--imu-calibration", default="configs/imu_calibration.yaml", help="IMU noise/bias calibration YAML.")
     args = parser.parse_args()
 
     summary = generate_openvins_config(
@@ -252,6 +276,7 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         camera_ids=args.camera_ids,
         template_config_dir=Path(args.template_config_dir) if args.template_config_dir else None,
+        imu_calibration_path=Path(args.imu_calibration) if args.imu_calibration else None,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

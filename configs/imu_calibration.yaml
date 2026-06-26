@@ -1,0 +1,43 @@
+# First-pass IMU intrinsic/noise calibration copied from VimasCalibration outputs.
+#
+# Source files:
+#   ../VimasCalibration/imu_calibration/static/head_imu_exp01/head_imu_noise.yaml
+#   ../VimasCalibration/imu_calibration/static/wrist_imu_exp01/wrist_imu_noise.yaml
+#
+# These are static prototype estimates, not final Allan variance results.
+
+imus:
+  head_imu:
+    accelerometer_noise_density: 0.00038201490199235826
+    accelerometer_random_walk: 3.8201490199235826e-05
+    gyroscope_noise_density: 6.606039558454192e-06
+    gyroscope_random_walk: 6.606039558454193e-07
+    accel_bias_mps2:
+      - -0.46155064215184016
+      - -0.09689502460956959
+      - 9.859141468546635
+    gyro_bias_radps:
+      - -0.004122282084198011
+      - 0.0015591975944571606
+      - 0.0015028134807532718
+    sample_rate_hz: 5330.689311434861
+    sample_count: 10240
+    source: ../VimasCalibration/imu_calibration/static/head_imu_exp01/head_imu_noise.yaml
+    note: First-pass static estimate; replace with Allan variance for production calibration.
+  wrist_imu:
+    accelerometer_noise_density: 4.0045094946585676e-05
+    accelerometer_random_walk: 4.0045094946585676e-06
+    gyroscope_noise_density: 4.231976701234699e-06
+    gyroscope_random_walk: 4.2319767012346987e-07
+    accel_bias_mps2:
+      - 0.16584648762110965
+      - -0.07380141469799834
+      - 9.895526072751867
+    gyro_bias_radps:
+      - -1.4868765391261235e-05
+      - -6.861659880559923e-05
+      - 0.0003177510233614057
+    sample_rate_hz: 4737.8769573354175
+    sample_count: 9672
+    source: ../VimasCalibration/imu_calibration/static/wrist_imu_exp01/wrist_imu_noise.yaml
+    note: First-pass static estimate; replace with Allan variance for production calibration.

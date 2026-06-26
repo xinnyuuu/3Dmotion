@@ -1,4 +1,4 @@
-# Frame configuration placeholder.
+# Frame configuration.
 #
 # Convention:
 #   T_A_B maps points from frame B into frame A.
@@ -12,20 +12,39 @@ wrist_frame: B
 head_imu_frame: I_H
 wrist_imu_frame: I_B
 
+frame_conventions:
+  B:
+    origin: wristband_geometric_center
+    x: toward_fingers_along_back_of_hand_plane
+    y: toward_left_side_of_hand
+    z: outward_normal_from_back_of_hand
+    handedness: right
+
 transforms:
   T_W_H:
     source: openvins
     status: pending
   T_H_IH:
     source: head_imu_to_head_calibration
-    status: pending
-    note: "P3a may temporarily use H := I_H before this extrinsic is measured."
+    status: p3a_uses_identity_until_measured
+    rotation_matrix:
+      - [1.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0]
+      - [0.0, 0.0, 1.0]
+    translation_m: [0.0, 0.0, 0.0]
+    note: "Temporary P3a convention is H := I_H. Replace after camera-IMU/head extrinsic calibration."
   T_B_IB:
     source: wrist_imu_to_wristband_calibration
-    status: pending
+    status: measured_from_axes_and_translation
+    rotation_matrix:
+      - [-1.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0]
+      - [0.0, 0.0, 1.0]
+    translation_m: [0.0, 0.0, -0.034]
+    note: "IMU +X = B -X, IMU +Y = B -Y, IMU +Z = B +Z. Wrist IMU origin is 34 mm along B -Z from wristband center."
   T_H_B:
     source: apriltag_ring_node
-    status: pending
+    status: runtime_estimate
   T_W_B:
     source: composition
     formula: "T_W_H * T_H_B"

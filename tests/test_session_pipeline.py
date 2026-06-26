@@ -98,6 +98,23 @@ def test_openvins_config_exports_four_camera_compatibility_view(tmp_path: Path) 
     assert "source_projection_model: mei" in imucam_text
 
 
+def test_openvins_config_uses_imu_calibration(tmp_path: Path) -> None:
+    output = tmp_path / "openvins_config"
+
+    summary = generate_openvins_config(
+        cameras_path=Path("configs/cameras.yaml"),
+        output_dir=output,
+        template_config_dir=None,
+        imu_calibration_path=Path("configs/imu_calibration.yaml"),
+    )
+
+    assert summary["imu_calibration"]["head_imu_sample_count"] == 10240
+    imu_text = (output / "kalibr_imu_chain.yaml").read_text(encoding="utf-8")
+    assert "accelerometer_noise_density: 0.00038201490199235826" in imu_text
+    assert "gyroscope_noise_density: 6.606039558454192e-06" in imu_text
+    assert "source_imu_id: head_imu" in imu_text
+
+
 def test_prepare_openvins_session_defaults_to_four_head_cameras(tmp_path: Path) -> None:
     session = _make_quad_session(tmp_path)
     output = tmp_path / "processed" / "openvins_session"

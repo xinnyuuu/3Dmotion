@@ -20,6 +20,7 @@
 - `prepare_p3_head_vio.py`: P3a 一站式准备脚本，生成 OpenVINS JSONL 和 config。
 - `check_head_vio_readiness.py`: 判断 session 是否适合 `C0 + head_imu` OpenVINS 测试。
 - `generate_openvins_config.py`: 从当前 camera calibration 生成第一版 OpenVINS config。
+- `check_calibration_readiness.py`: 检查 `configs/` 中 camera / IMU / bracelet 标定是否足够进入验证。
 - `write_openvins_rosbag2.py`: 在 ROS2 环境里把 OpenVINS JSONL 写成 rosbag2。
 - `source_openvins_ros2.bash`: source ROS2 Humble 和本地 OpenVINS package setup。
 
@@ -52,6 +53,5 @@ data/processed/euroc_v2_01_easy/openvins_stereo/
 
 ## 后续骨架
 
-- calibration sanity checks
 - trajectory export
 - final WAM motion stream export

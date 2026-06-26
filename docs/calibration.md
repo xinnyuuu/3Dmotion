@@ -2,6 +2,12 @@
 
 这个项目的精度主要卡在标定。算法可以后面慢慢换，但坐标系、尺寸、时间戳如果一开始混乱，后面会很难 debug。
 
+快速检查当前配置是否齐全：
+
+```bash
+python scripts/check_calibration_readiness.py
+```
+
 ## Camera Intrinsics
 
 每个摄像头都需要单独标定：
@@ -25,7 +31,8 @@ eucm-none
 omni-radtan
 ```
 
-OpenCV fisheye 只作为当前 3D Motion 原型链路的 fallback。FourHeadIntrinsics 的 OpenCV fallback 导入到本项目时写成 OpenVINS/Kalibr 兼容的：
+OpenCV fisheye 只作为当前 3D Motion 原型链路的 fallback。VimasCalibration 的 OpenCV fallback
+结果手动填入本项目时，应写成 OpenVINS/Kalibr 兼容的：
 
 ```text
 camera_model: fisheye
@@ -43,8 +50,9 @@ MJPG 1600x1200 @ 25fps
 
 - 四个摄像头即使型号一样，也不要假设 intrinsics 完全相同。
 - 内参必须和真实录制 resolution 一致；从 1600x1200 切到 1920x1080、800x600、1:1 方形传感器后都要重新标定。
-- OpenCV fallback 的 `configs/cameras.yaml` 应由 `FourHeadIntrinsics/scripts/export_3dmotion_cameras_yaml.py` 从 `four_camera_intrinsics.yaml` 生成，避免手抄模型名或畸变参数。
-- Kalibr `camchain.yaml` 可用 `FourHeadIntrinsics/scripts/import_kalibr_camchain_to_3dmotion.py` 导入并保存 DS/EUCM/omni 参数；当前 AprilTag/OpenVINS 代码不会把这些模型静默当 pinhole 使用。
+- VimasCalibration 和 3DMotion 是独立仓库；VimasCalibration 产出标定结果，3DMotion 只消费本仓库 `configs/` 里的 YAML。
+- 从 VimasCalibration 复制标定值到 3DMotion 时，需要人工审阅 frame convention、单位和 transform 方向，不做跨仓库一键写入。
+- 当前 AprilTag/OpenVINS 代码不会把 DS/EUCM/omni 参数静默当 pinhole 使用；OpenVINS config generator 只导出当前支持的 compatibility view。
 - 在 `T_H_C` 外参没有标定前，AprilTag 可以先做单相机诊断，但多相机融合位姿不能当最终结果。
 
 ## Camera-to-Head Extrinsics
@@ -85,6 +93,14 @@ T_H_C3
 ```text
 configs/frames.yaml
 ```
+
+相机外参最终落在：
+
+```text
+configs/cameras.yaml
+```
+
+每个 camera entry 的 `T_H_C` 必须是 4x4 matrix 或 `[x, y, z, yaw_deg, pitch_deg, roll_deg]`。
 
 ## Head IMU-to-Head Extrinsics
 

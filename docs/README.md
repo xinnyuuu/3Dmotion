@@ -34,3 +34,11 @@
 - 模块 README 只写模块职责、输入输出和当前状态，不复制完整命令流程。
 - 临时讨论、方案对比、一次性 debug 记录不进入长期文档。
 - 真实数据报告放在 `project_tests/reports/`，默认不提交。
+
+## 标定检查
+
+进入四目 / IMU 验证前运行：
+
+```bash
+python scripts/check_calibration_readiness.py
+```

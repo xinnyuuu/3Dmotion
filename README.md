@@ -98,6 +98,12 @@ Run automated tests:
 python -m pytest tests
 ```
 
+Check whether calibration files are ready for four cameras + dual IMUs:
+
+```bash
+python scripts/check_calibration_readiness.py
+```
+
 ## Repository Layout
 
 ```text

@@ -531,6 +531,28 @@ ros2 bag play data/processed/session_YYYYMMDD_HHMMSS/openvins_c0/rosbag2
 - camera 与 IMU 时间偏移是否过大
 - `T_imu_cam` 是否还是粗略 identity
 
+## 11.5 标定配置 readiness 检查
+
+在四目 wrist visual、head VIO 或 wrist fusion 之前，先检查本仓库 `configs/`
+里的标定值是否齐全：
+
+```bash
+cd ~/lxy/3DMotion
+python scripts/check_calibration_readiness.py
+```
+
+当前检查项包括：
+
+```text
+configs/cameras.yaml          camera intrinsics/distortion/T_H_C
+configs/frames.yaml           T_B_IB and frame conventions
+configs/imu_calibration.yaml  head_imu/wrist_imu noise and bias
+configs/bracelet.yaml         wristband tag geometry
+```
+
+VimasCalibration 是独立标定仓库。它产出相机/IMU 标定结果；3DMotion 只读取本仓库
+`configs/` 中已经人工审阅并填好的 YAML，不直接从 VimasCalibration 自动写入。
+
 如果 OpenVINS 进程刚启动就 `exit code -11`，通常不是数据运动问题，而是 OpenVINS config schema / YAML 与当前 OpenVINS 版本不匹配。先重新生成 P3a config：
 
 ```bash
