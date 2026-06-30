@@ -16,13 +16,21 @@ def generate_launch_description() -> LaunchDescription:
     fixed_frame = LaunchConfiguration("fixed_frame")
     rate_hz = LaunchConfiguration("rate_hz")
     loop = LaunchConfiguration("loop")
+    publish_camera_images = LaunchConfiguration("publish_camera_images")
+    camera_frames_jsonl = LaunchConfiguration("camera_frames_jsonl")
+    camera_image_max_width = LaunchConfiguration("camera_image_max_width")
+    camera_rate_hz = LaunchConfiguration("camera_rate_hz")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("motion_jsonl", default_value=""),
             DeclareLaunchArgument("fixed_frame", default_value="world"),
             DeclareLaunchArgument("rate_hz", default_value="30.0"),
-            DeclareLaunchArgument("loop", default_value="false"),
+            DeclareLaunchArgument("loop", default_value="true"),
+            DeclareLaunchArgument("publish_camera_images", default_value="true"),
+            DeclareLaunchArgument("camera_frames_jsonl", default_value=""),
+            DeclareLaunchArgument("camera_image_max_width", default_value="480"),
+            DeclareLaunchArgument("camera_rate_hz", default_value="5.0"),
             Node(
                 package="vimas_motion_bringup",
                 executable="motion_replay_visualizer.py",
@@ -34,6 +42,10 @@ def generate_launch_description() -> LaunchDescription:
                         "fixed_frame": fixed_frame,
                         "rate_hz": rate_hz,
                         "loop": loop,
+                        "publish_camera_images": publish_camera_images,
+                        "camera_frames_jsonl": camera_frames_jsonl,
+                        "camera_image_max_width": camera_image_max_width,
+                        "camera_rate_hz": camera_rate_hz,
                     }
                 ],
             ),

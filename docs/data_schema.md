@@ -214,7 +214,86 @@ data/processed/openvins_session/rosbag2_summary.json
 /imu0            sensor_msgs/msg/Imu
 ```
 
-第一版只建议导出 `C0 + head_imu`。等单目 VIO 能跑通，再导出 `C0/C1` 或四目。
+当前默认导出四目 head cameras + `head_imu`。调试时仍可用 `--camera-id C0` 退回单目。
+
+## AprilGrid world-anchor 输出
+
+当前可复现主线写入：
+
+```text
+data/processed/session_YYYYMMDD_HHMMSS/world_anchor/
+  world_anchor_candidates.jsonl
+  wrist_world_candidates.jsonl
+  hand_skeletons.jsonl
+  head_pose.jsonl
+  motion_frame.jsonl
+  motion_frame_filtered.jsonl
+  world_anchor_summary.json
+```
+
+`motion_frame.jsonl` 每行是一帧 head/wrist 状态：
+
+```json
+{
+  "timestamp_us": 1782800258715900,
+  "timestamp_monotonic_ns": 15123456789000,
+  "head": {
+    "position": [0.0, 0.0, 0.0],
+    "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    "tracking_state": "visual"
+  },
+  "wrist": {
+    "position": [0.1, 0.0, 0.2],
+    "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    "tracking_state": "visual"
+  },
+  "relative": {
+    "T_H_B": {
+      "position": [0.1, 0.0, 0.2],
+      "orientation_wxyz": [1.0, 0.0, 0.0, 0.0]
+    }
+  },
+  "fusion": {
+    "method": "aprilgrid_world_anchor"
+  }
+}
+```
+
+`head` 或 `wrist` 可以为 `null`，表示该帧没有可信估计。RViz replay 会跳过缺失对象，而不是复用旧 pose。
+
+`hand_skeletons.jsonl` 每行保存一个手部 skeleton candidate；`motion_frame.jsonl` 只保留每帧选中的 skeleton：
+
+```json
+{
+  "timestamp_us": 1782800258715900,
+  "group_id": 42,
+  "hand_index": 0,
+  "camera_id": "C1+C2",
+  "source": {
+    "method": "multiview_triangulated",
+    "cameras_used": ["C1", "C2"]
+  },
+  "landmarks": [
+    {
+      "index": 0,
+      "world": [0.1, 0.0, 0.2],
+      "observation_count": 2
+    }
+  ],
+  "connections": [[0, 1], [1, 2]]
+}
+```
+
+`source.method` 常见值：
+
+```text
+multiview_triangulated          two or more cameras triangulated the hand
+singleview_guided_by_multiview  one camera plus recent multiview state
+mediapipe_2d_backprojected_to_wrist_depth
+                                raw wrist-depth fallback, disabled by default
+```
+
+`motion_frame_filtered.jsonl` 是对 `motion_frame.jsonl` 的数据层滤波结果，当前由 `scripts/filter_motion_frame.py` 或 `scripts/process_dashboard_session.py` 生成。它不是 RViz display smoothing；后续算法如果需要平滑 pose，也应该显式选择这个文件。
 
 ## 时间戳规则
 

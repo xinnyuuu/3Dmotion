@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
+import os
+import re
+import signal
 import socketserver
+import subprocess
 import threading
 import time
 import traceback
@@ -14,7 +19,13 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from packages.imu_ble_bridge.wt901 import WT901BleClient, scan_wt_devices, write_jsonl_sample
+from packages.imu_ble_bridge.wt901 import (
+    WT901BleClient,
+    WT901SerialAdapterClient,
+    scan_serial_adapter_devices,
+    scan_wt_devices,
+    write_jsonl_sample,
+)
 from packages.quad_camera_capture.capture import CameraSource, QuadCameraCapture
 from packages.quad_camera_capture.v4l2 import find_capture_devices, get_camera_config
 from packages.session_tools.validate_session import validate_session
@@ -25,12 +36,33 @@ DEFAULT_CAMERA_HEIGHT = 1200
 DEFAULT_CAMERA_FPS = 25.0
 DEFAULT_CAMERA_FORMAT = "MJPG"
 DEFAULT_PREVIEW_FPS = 8.0
+DEFAULT_IMU_SCAN_TIMEOUT_S = 20.0
+IMU_NO_DATA_WARN_S = 5.0
+IMU_STALE_SAMPLE_WARN_S = 3.0
+DEFAULT_HEAD_IMU_ADAPTER_PORT = "/dev/ttyACM1"
+DEFAULT_WRIST_IMU_ADAPTER_PORT = "/dev/ttyACM0"
+KNOWN_IMU_DEVICES = [
+    {
+        "name": "USB adapter ACM0",
+        "address": "",
+        "transport": "serial_adapter",
+        "adapter_port": DEFAULT_WRIST_IMU_ADAPTER_PORT,
+        "adapter_passive": True,
+    },
+    {
+        "name": "USB adapter ACM1",
+        "address": "",
+        "transport": "serial_adapter",
+        "adapter_port": DEFAULT_HEAD_IMU_ADAPTER_PORT,
+        "adapter_passive": True,
+    },
+]
 
 
 @dataclass
 class PreviewState:
     key: str
-    source: str
+    source: object
     fourcc: str
     width: int
     height: int
@@ -51,7 +83,7 @@ class PreviewCaptureManager:
         self.lock = threading.Lock()
         self.captures: dict[str, PreviewState] = {}
 
-    def get(self, source: str, fourcc: str, width: int, height: int, fps: float) -> PreviewState:
+    def get(self, source: object, fourcc: str, width: int, height: int, fps: float) -> PreviewState:
         fourcc = _normalize_fourcc(fourcc)
         with self.lock:
             state = self.captures.get(source)
@@ -70,7 +102,7 @@ class PreviewCaptureManager:
                 self.captures[source] = state
             return state
 
-    def read_jpeg(self, source: str, fourcc: str, width: int, height: int, fps: float) -> bytes | None:
+    def read_jpeg(self, source: object, fourcc: str, width: int, height: int, fps: float) -> bytes | None:
         state = self.get(source, fourcc, width, height, fps)
         with state.lock:
             return state.last_jpeg
@@ -104,7 +136,7 @@ class PreviewCaptureManager:
                 }
         return result
 
-    def _start_state(self, source: str, fourcc: str, width: int, height: int, fps: float) -> PreviewState:
+    def _start_state(self, source: object, fourcc: str, width: int, height: int, fps: float) -> PreviewState:
         state = PreviewState(
             key=_stream_key(source, fourcc, width, height, fps),
             source=source,
@@ -121,12 +153,12 @@ class PreviewCaptureManager:
 
     def _stop_state(self, state: PreviewState) -> None:
         state.stop_event.set()
-        cap = state.cap
-        if cap is not None:
-            cap.release()
         if state.thread is not None and state.thread is not threading.current_thread():
             state.thread.join(timeout=1.5)
         still_alive = bool(state.thread and state.thread.is_alive())
+        if still_alive and state.cap is not None:
+            with contextlib.suppress(Exception):
+                state.cap.release()
         with state.lock:
             state.cap = None
             state.last_jpeg = None
@@ -136,6 +168,10 @@ class PreviewCaptureManager:
     def _open_capture(self, state: PreviewState):
         import cv2
 
+        if not _is_valid_capture_source(state.source):
+            with state.lock:
+                state.status = f"invalid source: {state.source}"
+            return None
         cap = cv2.VideoCapture(state.source, cv2.CAP_V4L2)
         if cap.isOpened():
             if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
@@ -157,8 +193,11 @@ class PreviewCaptureManager:
             cap = self._open_capture(state)
             with state.lock:
                 state.cap = cap
-                state.status = "streaming" if cap.isOpened() else "open failed"
+                state.status = "streaming" if cap is not None and cap.isOpened() else state.status if state.status.startswith("invalid source") else "open failed"
                 state.failed_reads = 0
+            if cap is None:
+                state.stop_event.wait(0.35)
+                continue
             if not cap.isOpened():
                 cap.release()
                 state.stop_event.wait(0.35)
@@ -220,12 +259,18 @@ class ImuSlotStatus:
     slot: str
     selected_name: str | None = None
     selected_address: str | None = None
+    transport: str = "ble"
+    adapter_port: str | None = None
+    adapter_device_index: int | None = None
+    adapter_passive: bool = False
     connection_state: str = "idle"
+    connection_monotonic_ns: int | None = None
     last_sample_monotonic_ns: int | None = None
     last_error: str | None = None
     recording: bool = False
     output: str | None = None
     last_sample: dict | None = None
+    sample_count: int = 0
 
     def as_dict(self) -> dict:
         data = asdict(self)
@@ -234,6 +279,11 @@ class ImuSlotStatus:
             data["last_sample_age_s"] = round(age_s, 2)
         else:
             data["last_sample_age_s"] = None
+        if self.connection_monotonic_ns is not None:
+            age_s = (time.monotonic_ns() - self.connection_monotonic_ns) / 1_000_000_000
+            data["connection_age_s"] = round(age_s, 2)
+        else:
+            data["connection_age_s"] = None
         return data
 
 
@@ -242,6 +292,7 @@ class CaptureJobs:
         self.lock = threading.Lock()
         self.camera = JobStatus(kind="camera")
         self.recording = JobStatus(kind="record")
+        self.visualization = JobStatus(kind="visualization")
         self.imu_slots = {
             "head_imu": ImuSlotStatus(slot="head_imu"),
             "wrist_imu": ImuSlotStatus(slot="wrist_imu"),
@@ -252,8 +303,11 @@ class CaptureJobs:
             "wrist_imu": threading.Event(),
         }
         self._imu_record_paths: dict[str, Path | None] = {"head_imu": None, "wrist_imu": None}
+        self._imu_live_paths: dict[str, Path | None] = {"head_imu": None, "wrist_imu": None}
         self._session_dir: Path | None = None
         self._camera_thread: threading.Thread | None = None
+        self._imu_threads: dict[str, threading.Thread | None] = {"head_imu": None, "wrist_imu": None}
+        self._visualization_processes: list[subprocess.Popen] = []
         self.session_summary: dict | None = None
 
     def start_record(self, payload: dict) -> JobStatus:
@@ -312,8 +366,28 @@ class CaptureJobs:
         slot = _imu_slot(payload)
         address = str(payload.get("address") or "").strip()
         name = str(payload.get("name") or "WT IMU").strip()
-        if not address:
-            raise RuntimeError("Missing BLE address.")
+        transport = str(payload.get("transport") or "ble").strip()
+        adapter_port = str(payload.get("adapter_port") or "").strip() or None
+        adapter_device_index = _optional_int(payload.get("adapter_device_index"))
+        adapter_passive = _optional_bool(payload.get("adapter_passive"))
+        if transport not in {"ble", "serial_adapter"}:
+            raise RuntimeError(f"Unknown IMU transport: {transport}")
+        if transport == "serial_adapter" and not adapter_port:
+            raise RuntimeError("Missing serial adapter port.")
+        if not address and not (transport == "serial_adapter" and adapter_passive):
+            raise RuntimeError("Missing IMU BLE address.")
+
+        with self.lock:
+            current = self.imu_slots[slot]
+            same_target = (
+                current.selected_address == address
+                and current.transport == transport
+                and current.adapter_port == adapter_port
+                and current.adapter_device_index == adapter_device_index
+                and current.adapter_passive == adapter_passive
+            )
+            if same_target and current.connection_state in {"connecting", "waiting_data", "connected"}:
+                return current
 
         self._imu_stop_events[slot].set()
         with self.lock:
@@ -323,10 +397,21 @@ class CaptureJobs:
                 slot=slot,
                 selected_name=name,
                 selected_address=address,
+                transport=transport,
+                adapter_port=adapter_port,
+                adapter_device_index=adapter_device_index,
+                adapter_passive=adapter_passive,
                 connection_state="connecting",
+                connection_monotonic_ns=time.monotonic_ns(),
             )
             stop_event = self._imu_stop_events[slot]
-        thread = threading.Thread(target=self._run_imu_connection, args=(slot, address, stop_event), daemon=True)
+        thread = threading.Thread(
+            target=self._run_imu_connection,
+            args=(slot, address, transport, adapter_port, adapter_device_index, adapter_passive, stop_event),
+            daemon=True,
+        )
+        with self.lock:
+            self._imu_threads[slot] = thread
         thread.start()
         return self.imu_slots[slot]
 
@@ -342,12 +427,199 @@ class CaptureJobs:
 
     def snapshot(self) -> dict:
         with self.lock:
+            self._refresh_visualization_locked()
+            self._refresh_imu_health_locked()
             return {
                 "recording": self.recording.as_dict(),
                 "camera": self.camera.as_dict(),
+                "visualization": self.visualization.as_dict(),
                 "imus": {slot: status.as_dict() for slot, status in self.imu_slots.items()},
                 "session_summary": self.session_summary,
             }
+
+    def start_visualization(self, payload: dict) -> JobStatus:
+        with self.lock:
+            self._refresh_visualization_locked()
+            if self.visualization.active:
+                raise RuntimeError("Visualization is already running.")
+            if self.recording.active:
+                raise RuntimeError("Stop recording before starting live visualization.")
+
+        camera_sources = _camera_sources_from_payload(payload)
+        if not camera_sources:
+            raise RuntimeError("Select at least one camera before starting visualization.")
+
+        repo_root = Path(__file__).resolve().parents[2]
+        log_dir = repo_root / "data" / "processed" / "live_visualization"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        live_log = log_dir / f"world_anchor_live_{stamp}.log"
+        rviz_log = log_dir / f"rviz_live_{stamp}.log"
+        head_imu_live = log_dir / f"head_imu_live_{stamp}.jsonl"
+        wrist_imu_live = log_dir / f"wrist_imu_live_{stamp}.jsonl"
+        head_imu_live.write_text("", encoding="utf-8")
+        wrist_imu_live.write_text("", encoding="utf-8")
+        cfg = _record_profile_from_payload(payload)
+        live_fps = min(float(cfg["fps"]), 10.0)
+        ros_domain_id = str(payload.get("ros_domain_id") or "73")
+        source_args = " ".join(
+            _shell_quote(item)
+            for source in camera_sources
+            for item in ("--source", f"{source.camera_id}:{source.source}")
+        )
+        live_cmd = (
+            f"cd {_shell_quote(str(repo_root))} && "
+            "source /opt/ros/humble/setup.bash && "
+            "source .venv/bin/activate && "
+            f"export ROS_DOMAIN_ID={_shell_quote(ros_domain_id)} ROS_LOCALHOST_ONLY=1 && "
+            "python scripts/process_world_anchor_session.py live "
+            f"{source_args} "
+            "--world-tags configs/world_tags.yaml "
+            "--bracelet configs/bracelet.yaml "
+            f"--width {_shell_quote(str(cfg['width']))} "
+            f"--height {_shell_quote(str(cfg['height']))} "
+            f"--fps {_shell_quote(f'{live_fps:g}')} "
+            f"--head-imu-live-jsonl {_shell_quote(str(head_imu_live))} "
+            f"--wrist-imu-live-jsonl {_shell_quote(str(wrist_imu_live))} "
+            "--ros-publish"
+        )
+        if payload.get("hands"):
+            live_cmd += " --hands"
+        rviz_cmd = (
+            f"cd {_shell_quote(str(repo_root / 'ros2_ws'))} && "
+            "unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH && "
+            "source /opt/ros/humble/setup.bash && "
+            "source install/setup.bash && "
+            f"export ROS_DOMAIN_ID={_shell_quote(ros_domain_id)} ROS_LOCALHOST_ONLY=1 && "
+            "ros2 launch vimas_motion_bringup motion_live_rviz.launch.py"
+        )
+
+        try:
+            live_file = live_log.open("w", encoding="utf-8")
+            rviz_file = rviz_log.open("w", encoding="utf-8")
+            live_process = subprocess.Popen(
+                ["bash", "-lc", live_cmd],
+                stdout=live_file,
+                stderr=subprocess.STDOUT,
+                cwd=repo_root,
+                start_new_session=True,
+            )
+            time.sleep(0.8)
+            rviz_process = subprocess.Popen(
+                ["bash", "-lc", rviz_cmd],
+                stdout=rviz_file,
+                stderr=subprocess.STDOUT,
+                cwd=repo_root,
+                start_new_session=True,
+            )
+        except Exception:
+            with contextlib.suppress(Exception):
+                live_file.close()
+            with contextlib.suppress(Exception):
+                rviz_file.close()
+            raise
+
+        with self.lock:
+            self._imu_live_paths["head_imu"] = head_imu_live
+            self._imu_live_paths["wrist_imu"] = wrist_imu_live
+            self._visualization_processes = [live_process, rviz_process]
+            self.visualization = JobStatus(
+                kind="visualization",
+                active=True,
+                started_at=time.monotonic(),
+                message="running",
+                output=f"live={live_log} rviz={rviz_log} head_imu={head_imu_live} wrist_imu={wrist_imu_live}",
+            )
+            return self.visualization
+
+    def stop_visualization(self) -> JobStatus:
+        with self.lock:
+            processes = list(self._visualization_processes)
+            self._visualization_processes = []
+            for slot in self._imu_live_paths:
+                self._imu_live_paths[slot] = None
+            self.visualization.message = "stopping"
+
+        for process in processes:
+            self._terminate_process_group(process)
+
+        with self.lock:
+            self.visualization.active = False
+            self.visualization.finished_at = time.monotonic()
+            self.visualization.message = "stopped"
+            return self.visualization
+
+    def shutdown(self, timeout_s: float = 3.0) -> None:
+        self._camera_stop.set()
+        for event in self._imu_stop_events.values():
+            event.set()
+        with self.lock:
+            visualization_processes = list(self._visualization_processes)
+            self._visualization_processes = []
+            camera_thread = self._camera_thread
+            imu_threads = [thread for thread in self._imu_threads.values() if thread is not None]
+            for slot in self._imu_record_paths:
+                self._imu_record_paths[slot] = None
+                self._imu_live_paths[slot] = None
+                self.imu_slots[slot].recording = False
+                if self.imu_slots[slot].connection_state not in {"idle", "disconnected", "failed"}:
+                    self.imu_slots[slot].connection_state = "disconnecting"
+            self.recording.active = False
+            self.camera.active = False
+            self.visualization.active = False
+
+        deadline = time.monotonic() + max(0.1, timeout_s)
+        for process in visualization_processes:
+            self._terminate_process_group(process)
+        if camera_thread is not None and camera_thread is not threading.current_thread():
+            camera_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        for thread in imu_threads:
+            if thread is threading.current_thread():
+                continue
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    def _refresh_visualization_locked(self) -> None:
+        if not self._visualization_processes:
+            if self.visualization.active:
+                for slot in self._imu_live_paths:
+                    self._imu_live_paths[slot] = None
+                self.visualization.active = False
+                self.visualization.finished_at = time.monotonic()
+                self.visualization.message = "stopped"
+            return
+        running = [process for process in self._visualization_processes if process.poll() is None]
+        if running:
+            exited = [process.returncode for process in self._visualization_processes if process.poll() is not None]
+            self._visualization_processes = running
+            self.visualization.active = True
+            if exited and any(code not in (0, None) for code in exited):
+                self.visualization.message = f"running; child exited {exited}"
+                self.visualization.error = f"One visualization child exited with codes {exited}. Check logs: {self.visualization.output}"
+            return
+        codes = [process.returncode for process in self._visualization_processes]
+        self._visualization_processes = []
+        for slot in self._imu_live_paths:
+            self._imu_live_paths[slot] = None
+        self.visualization.active = False
+        self.visualization.finished_at = time.monotonic()
+        if any(code not in (0, None) for code in codes):
+            self.visualization.message = f"exited {codes}"
+            self.visualization.error = f"Visualization processes exited with codes {codes}."
+        else:
+            self.visualization.message = "stopped"
+
+    def _terminate_process_group(self, process: subprocess.Popen) -> None:
+        if process.poll() is not None:
+            return
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1.0)
 
     def _finalize_session_summary(self, session_dir: Path, camera_thread: threading.Thread | None) -> None:
         if camera_thread is not None and camera_thread.is_alive():
@@ -427,7 +699,16 @@ class CaptureJobs:
                 self.camera.message = "failed"
                 self.camera.error = f"{exc}\n{traceback.format_exc()}"
 
-    def _run_imu_connection(self, slot: str, address: str, stop_event: threading.Event) -> None:
+    def _run_imu_connection(
+        self,
+        slot: str,
+        address: str,
+        transport: str,
+        adapter_port: str | None,
+        adapter_device_index: int | None,
+        adapter_passive: bool,
+        stop_event: threading.Event,
+    ) -> None:
         try:
             sensor_id = slot
 
@@ -435,8 +716,10 @@ class CaptureJobs:
                 client = WT901BleClient(
                     address,
                     sensor_id,
-                    lambda sample: self._handle_imu_sample(slot, sample),
-                    on_connected=lambda: self._mark_imu_connected(slot),
+                    lambda sample: self._handle_imu_sample(slot, sample, address, transport, adapter_port, adapter_device_index, adapter_passive),
+                    on_connected=lambda: self._mark_imu_connected(slot, address, transport, adapter_port, adapter_device_index, adapter_passive),
+                    on_disconnected=lambda: self._mark_imu_disconnected(slot, address, transport, adapter_port, adapter_device_index, adapter_passive),
+                    aux_poll=False,
                 )
                 task = asyncio.create_task(client.run(duration_s=None))
                 while not task.done():
@@ -449,33 +732,131 @@ class CaptureJobs:
                 except asyncio.CancelledError:
                     return
 
-            asyncio.run(run_client())
+            if transport == "serial_adapter":
+                while not stop_event.is_set():
+                    try:
+                        client = WT901SerialAdapterClient(
+                            adapter_port or "",
+                            sensor_id,
+                            lambda sample: self._handle_imu_sample(slot, sample, address, transport, adapter_port, adapter_device_index, adapter_passive),
+                            on_connected=lambda: self._mark_imu_waiting_data(slot, address, transport, adapter_port, adapter_device_index, adapter_passive),
+                            on_status=lambda message: self._mark_imu_status(slot, address, transport, adapter_port, adapter_device_index, adapter_passive, message),
+                            address=address,
+                            device_index=adapter_device_index,
+                            passive=adapter_passive,
+                            aux_poll=False,
+                        )
+                        client.run(duration_s=None, should_stop=stop_event.is_set)
+                    except Exception as exc:
+                        if stop_event.is_set():
+                            break
+                        with self.lock:
+                            if self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
+                                self.imu_slots[slot].connection_state = "reconnecting"
+                                self.imu_slots[slot].last_error = f"{exc}\n{traceback.format_exc()}"
+                        time.sleep(1.0)
+            else:
+                asyncio.run(run_client())
             with self.lock:
-                if self.imu_slots[slot].selected_address == address:
+                if self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
                     self.imu_slots[slot].connection_state = "disconnected"
                     self.imu_slots[slot].recording = False
                     self._imu_record_paths[slot] = None
         except Exception as exc:
             with self.lock:
-                if self.imu_slots[slot].selected_address == address:
+                if self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
                     self.imu_slots[slot].connection_state = "failed"
                     self.imu_slots[slot].recording = False
                     self.imu_slots[slot].last_error = f"{exc}\n{traceback.format_exc()}"
                     self._imu_record_paths[slot] = None
 
-    def _mark_imu_connected(self, slot: str) -> None:
+    def _is_current_imu_locked(
+        self,
+        slot: str,
+        address: str,
+        transport: str,
+        adapter_port: str | None,
+        adapter_device_index: int | None,
+        adapter_passive: bool,
+    ) -> bool:
+        status = self.imu_slots[slot]
+        return (
+            status.selected_address == address
+            and status.transport == transport
+            and status.adapter_port == adapter_port
+            and status.adapter_device_index == adapter_device_index
+            and status.adapter_passive == adapter_passive
+        )
+
+    def _mark_imu_connected(self, slot: str, address: str, transport: str, adapter_port: str | None, adapter_device_index: int | None, adapter_passive: bool) -> None:
         with self.lock:
+            if not self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
+                return
             self.imu_slots[slot].connection_state = "connected"
+            self.imu_slots[slot].connection_monotonic_ns = time.monotonic_ns()
             self.imu_slots[slot].last_error = None
 
-    def _handle_imu_sample(self, slot: str, sample) -> None:
-        path = None
+    def _mark_imu_waiting_data(self, slot: str, address: str, transport: str, adapter_port: str | None, adapter_device_index: int | None, adapter_passive: bool) -> None:
         with self.lock:
+            if not self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
+                return
+            self.imu_slots[slot].connection_state = "waiting_data"
+            self.imu_slots[slot].connection_monotonic_ns = time.monotonic_ns()
+            self.imu_slots[slot].last_error = None
+
+    def _mark_imu_status(self, slot: str, address: str, transport: str, adapter_port: str | None, adapter_device_index: int | None, adapter_passive: bool, message: str) -> None:
+        with self.lock:
+            if not self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
+                return
+            self.imu_slots[slot].connection_state = "connecting"
+            self.imu_slots[slot].connection_monotonic_ns = time.monotonic_ns()
+            self.imu_slots[slot].last_error = message
+
+    def _mark_imu_disconnected(self, slot: str, address: str, transport: str, adapter_port: str | None, adapter_device_index: int | None, adapter_passive: bool) -> None:
+        with self.lock:
+            if not self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
+                return
+            self.imu_slots[slot].connection_state = "disconnected"
+            self.imu_slots[slot].recording = False
+            self.imu_slots[slot].last_error = "BLE disconnected."
+            self._imu_record_paths[slot] = None
+
+    def _handle_imu_sample(self, slot: str, sample, address: str, transport: str, adapter_port: str | None, adapter_device_index: int | None, adapter_passive: bool) -> None:
+        path = None
+        live_path = None
+        with self.lock:
+            if not self._is_current_imu_locked(slot, address, transport, adapter_port, adapter_device_index, adapter_passive):
+                return
+            self.imu_slots[slot].connection_state = "connected"
+            self.imu_slots[slot].connection_monotonic_ns = time.monotonic_ns()
+            self.imu_slots[slot].last_error = None
             self.imu_slots[slot].last_sample_monotonic_ns = sample.timestamp_monotonic_ns
             self.imu_slots[slot].last_sample = asdict(sample)
+            self.imu_slots[slot].sample_count += 1
             path = self._imu_record_paths.get(slot)
+            live_path = self._imu_live_paths.get(slot)
         if path is not None:
             write_jsonl_sample(path, sample)
+        if live_path is not None:
+            write_jsonl_sample(live_path, sample)
+
+    def _refresh_imu_health_locked(self) -> None:
+        now_ns = time.monotonic_ns()
+        for status in self.imu_slots.values():
+            if status.connection_state == "waiting_data" and status.connection_monotonic_ns is not None:
+                age_s = (now_ns - status.connection_monotonic_ns) / 1_000_000_000
+                if age_s >= IMU_NO_DATA_WARN_S and status.sample_count == 0:
+                    status.connection_state = "no_data"
+                    status.last_error = (
+                        "Adapter connected but no WT901 data packets were received. "
+                        "Check the selected /dev/ttyACM port, close any BLE direct connection, "
+                        "and make sure no other process owns the adapter."
+                    )
+            if status.connection_state == "connected" and status.last_sample_monotonic_ns is not None:
+                age_s = (now_ns - status.last_sample_monotonic_ns) / 1_000_000_000
+                if age_s >= IMU_STALE_SAMPLE_WARN_S:
+                    status.connection_state = "stale"
+                    status.last_error = f"No IMU sample received for {age_s:.1f}s."
 
 
 class DashboardServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -487,13 +868,13 @@ class DashboardServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.jobs = jobs
         self.preview_manager = PreviewCaptureManager()
         self.active_lock = threading.Lock()
-        self.active_streams: dict[str, str] = {}
+        self.active_streams: dict[object, str] = {}
 
-    def activate_stream(self, source: str, fourcc: str, width: int, height: int, fps: float) -> None:
+    def activate_stream(self, source: object, fourcc: str, width: int, height: int, fps: float) -> None:
         with self.active_lock:
             self.active_streams[source] = _stream_key(source, fourcc, width, height, fps)
 
-    def is_active_stream(self, source: str, fourcc: str, width: int, height: int, fps: float) -> bool:
+    def is_active_stream(self, source: object, fourcc: str, width: int, height: int, fps: float) -> bool:
         with self.active_lock:
             return self.active_streams.get(source) == _stream_key(source, fourcc, width, height, fps)
 
@@ -548,7 +929,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/imu/scan":
-            timeout_s = _optional_float(parse_qs(parsed.query).get("timeout_s", ["6"])[0]) or 6.0
+            timeout_s = _optional_float(parse_qs(parsed.query).get("timeout_s", [str(DEFAULT_IMU_SCAN_TIMEOUT_S)])[0]) or DEFAULT_IMU_SCAN_TIMEOUT_S
             try:
                 devices = _scan_imu_devices(timeout_s)
             except RuntimeError as exc:
@@ -558,6 +939,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": f"IMU scan failed: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
             self._send_json(devices)
+            return
+        if parsed.path == "/api/imu/known":
+            self._send_json(KNOWN_IMU_DEVICES)
             return
         if parsed.path == "/stream":
             params = parse_qs(parsed.query)
@@ -602,6 +986,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/imu/select":
                 self._send_json(self.server.jobs.select_imu(payload).as_dict())
                 return
+            if parsed.path == "/api/visualization/start":
+                self.server.stop_previews()
+                self._send_json(self.server.jobs.start_visualization(payload).as_dict())
+                return
+            if parsed.path == "/api/visualization/stop":
+                self._send_json(self.server.jobs.stop_visualization().as_dict())
+                return
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -623,11 +1014,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         width = width or DEFAULT_CAMERA_WIDTH
         height = height or DEFAULT_CAMERA_HEIGHT
         capture_fps = device_fps or output_fps or DEFAULT_PREVIEW_FPS
-        self.server.activate_stream(source, fourcc, width, height, capture_fps)
+        capture_source = _normalize_camera_source(source)
+        if not _is_valid_capture_source(capture_source):
+            self.send_error(HTTPStatus.BAD_REQUEST, f"Invalid camera source: {source}")
+            return
+        self.server.activate_stream(capture_source, fourcc, width, height, capture_fps)
         try:
             import cv2  # noqa: F401
 
-            self.server.preview_manager.get(source, fourcc, width, height, capture_fps)
+            self.server.preview_manager.get(capture_source, fourcc, width, height, capture_fps)
         except ImportError:
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "opencv-python is not installed")
             return
@@ -639,8 +1034,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         delay = 1.0 / max(1.0, min(output_fps, 15.0))
         try:
-            while self.server.is_active_stream(source, fourcc, width, height, capture_fps):
-                frame = self.server.preview_manager.read_jpeg(source, fourcc, width, height, capture_fps)
+            while self.server.is_active_stream(capture_source, fourcc, width, height, capture_fps):
+                frame = self.server.preview_manager.read_jpeg(capture_source, fourcc, width, height, capture_fps)
                 if frame is None:
                     frame = _make_placeholder_jpeg(source)
                 self.wfile.write(b"--frame\r\n")
@@ -704,10 +1099,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def _parse_source(source: str):
-    try:
-        return int(source)
-    except (TypeError, ValueError):
-        return source
+    return _normalize_camera_source(source)
+
+
+def _normalize_camera_source(source: str):
+    value = str(source or "").strip()
+    match = re.match(r"^C[0-3]:(.+)$", value)
+    if match:
+        value = match.group(1).strip()
+    path_match = re.search(r"(/dev/video\d+)\b", value)
+    if path_match:
+        return path_match.group(1)
+    video_match = re.search(r"\b(video\d+)\b", value)
+    if video_match:
+        return f"/dev/{video_match.group(1)}"
+    if re.fullmatch(r"\d+", value):
+        return int(value)
+    return value
+
+
+def _is_valid_capture_source(source: object) -> bool:
+    if isinstance(source, int):
+        return source >= 0
+    value = str(source or "").strip()
+    return value.startswith("/dev/")
 
 
 def _normalize_fourcc(value: str) -> str:
@@ -715,7 +1130,7 @@ def _normalize_fourcc(value: str) -> str:
     return value.ljust(4)
 
 
-def _stream_key(source: str, fourcc: str, width: int, height: int, fps: float) -> str:
+def _stream_key(source: object, fourcc: str, width: int, height: int, fps: float) -> str:
     return f"{source}|{_normalize_fourcc(fourcc)}|{width}x{height}@{fps:g}"
 
 
@@ -729,8 +1144,48 @@ def _make_placeholder_jpeg(label: str) -> bytes:
     return encoded.tobytes() if ok else b""
 
 
+def _imu_device_key(device: dict) -> str:
+    return "|".join(
+        [
+            str(device.get("transport") or "ble"),
+            str(device.get("adapter_port") or ""),
+            str(device.get("address") or ""),
+        ]
+    )
+
+
 def _scan_imu_devices(timeout_s: float) -> list[dict[str, str]]:
-    return [{"name": name, "address": address} for name, address in asyncio.run(scan_wt_devices(timeout_s))]
+    devices_by_address = {_imu_device_key(device): dict(device) for device in KNOWN_IMU_DEVICES}
+    for port in sorted({DEFAULT_HEAD_IMU_ADAPTER_PORT, DEFAULT_WRIST_IMU_ADAPTER_PORT}):
+        try:
+            for device in scan_serial_adapter_devices(port, timeout_s=min(timeout_s, 8.0)):
+                dashboard_device = {
+                    "name": device.name,
+                    "address": device.address,
+                    "transport": "serial_adapter",
+                    "adapter_port": port,
+                    "adapter_device_index": device.index,
+                    "adapter_passive": False,
+                }
+                known = _known_imu_device_by_address(device.address)
+                if known is not None:
+                    dashboard_device["slot"] = known.get("slot")
+                    dashboard_device["name"] = known.get("name") or dashboard_device["name"]
+                devices_by_address[_imu_device_key(dashboard_device)] = dashboard_device
+        except Exception:
+            continue
+    for name, address in asyncio.run(scan_wt_devices(timeout_s)):
+        device = {"name": name, "address": address}
+        devices_by_address[_imu_device_key(device)] = device
+    return list(devices_by_address.values())
+
+
+def _known_imu_device_by_address(address: str) -> dict | None:
+    wanted = address.lower()
+    for device in KNOWN_IMU_DEVICES:
+        if str(device.get("address") or "").lower() == wanted:
+            return device
+    return None
 
 
 def _optional_int(value) -> int | None:
@@ -743,6 +1198,12 @@ def _optional_float(value) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _optional_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _camera_sources_from_payload(payload: dict) -> list[CameraSource]:
@@ -758,11 +1219,33 @@ def _camera_sources_from_payload(payload: dict) -> list[CameraSource]:
     return sources
 
 
+def _record_profile_from_payload(payload: dict) -> dict:
+    return {
+        "width": _optional_int(payload.get("width")) or DEFAULT_CAMERA_WIDTH,
+        "height": _optional_int(payload.get("height")) or DEFAULT_CAMERA_HEIGHT,
+        "fps": _optional_float(payload.get("fps")) or DEFAULT_CAMERA_FPS,
+    }
+
+
+def _shell_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
 def _imu_slot(payload: dict) -> str:
     slot = str(payload.get("slot") or "wrist_imu").strip()
     if slot not in {"head_imu", "wrist_imu"}:
         raise RuntimeError(f"Unknown IMU slot: {slot}")
     return slot
+
+
+def _apply_serial_adapter_defaults(slot_ports: dict[str, str | None]) -> None:
+    for device in KNOWN_IMU_DEVICES:
+        slot = str(device.get("slot") or "")
+        port = slot_ports.get(slot)
+        if not port:
+            continue
+        device["transport"] = "serial_adapter"
+        device["adapter_port"] = port
 
 
 def _session_dir(payload: dict) -> Path:
@@ -858,15 +1341,29 @@ INDEX_HTML = r"""<!doctype html>
       <section style="margin-top: 14px;">
         <h2>IMU 设置</h2>
         <button id="scanImu">扫描 IMU</button>
+        <div class="actions">
+          <button id="connectAllImu">连接两个 IMU</button>
+          <button id="disconnectAllImu">断开两个 IMU</button>
+        </div>
         <h2>Head IMU</h2>
         <label>Device <select id="head_imu_device"></select></label>
+        <div class="actions">
+          <button id="head_imu_connect">连接所选</button>
+          <button id="head_imu_disconnect">断开</button>
+        </div>
         <div class="status" id="head_imu_status">未选择</div>
         <h2 style="margin-top: 14px;">Wrist IMU</h2>
         <label>Device <select id="wrist_imu_device"></select></label>
+        <div class="actions">
+          <button id="wrist_imu_connect">连接所选</button>
+          <button id="wrist_imu_disconnect">断开</button>
+        </div>
         <div class="status" id="wrist_imu_status">未选择</div>
       </section>
       <section style="margin-top: 14px;">
         <h2>状态</h2>
+        <label><input id="enableHands" type="checkbox"> 手部骨骼</label>
+        <button id="visualizeToggle">启动 RViz 可视化</button>
         <pre id="log"></pre>
       </section>
     </div>
@@ -904,6 +1401,7 @@ INDEX_HTML = r"""<!doctype html>
     let rotations = Array.from({length: SLOT_COUNT}, () => 0);
     let imuDevices = [];
     let recordingActive = false;
+    let visualizationActive = false;
     let recordingPreviewTimer = null;
 
     function applyCameraLayout() {
@@ -1210,7 +1708,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function recordPayload() {
       const cfg = selectedRecordConfig();
-      const data = {session_root: $('session_root').value, width: cfg.width, height: cfg.height, fps: cfg.fps};
+      const data = {session_root: $('session_root').value, width: cfg.width, height: cfg.height, fps: cfg.fps, hands: Boolean($('enableHands')?.checked)};
       selections.forEach((source, index) => {
         if (source) data[cameraIds[index]] = source;
       });
@@ -1238,7 +1736,26 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function imuLabel(device) {
-      return `${device.name || 'WT IMU'} ${device.address}`;
+      const transport = device.transport === 'serial_adapter' ? ` via ${device.adapter_port}` : '';
+      const mode = device.adapter_passive ? ' passive' : '';
+      return `${device.name || 'WT IMU'} ${device.address}${transport}${mode}`;
+    }
+
+    function imuKey(device) {
+      return `${device.transport || 'ble'}|${device.adapter_port || ''}|${device.address || ''}|${device.adapter_passive ? 'passive' : 'active'}`;
+    }
+
+    function mergeImuDevices(devices) {
+      const byKey = new Map(imuDevices.map(device => [imuKey(device), device]));
+      for (const device of devices || []) {
+        const normalized = {...device, transport: device.transport || 'ble'};
+        byKey.set(imuKey(normalized), {...byKey.get(imuKey(normalized)), ...normalized});
+      }
+      imuDevices = [...byKey.values()];
+    }
+
+    function defaultImuForSlot(slot) {
+      return imuDevices.find(device => device.slot === slot);
     }
 
     function populateImuSelect(slot, selected = '') {
@@ -1246,31 +1763,78 @@ INDEX_HTML = r"""<!doctype html>
       select.innerHTML = '<option value="">No IMU</option>';
       for (const device of imuDevices) {
         const opt = document.createElement('option');
-        opt.value = device.address;
+        opt.value = imuKey(device);
         opt.textContent = imuLabel(device);
         opt.dataset.name = device.name || 'WT IMU';
+        opt.dataset.address = device.address || '';
+        opt.dataset.transport = device.transport || 'ble';
+        opt.dataset.adapterPort = device.adapter_port || '';
+        opt.dataset.adapterDeviceIndex = device.adapter_device_index || '';
+        opt.dataset.adapterPassive = device.adapter_passive ? '1' : '';
         select.appendChild(opt);
       }
       if ([...select.options].some(option => option.value === selected)) select.value = selected;
     }
 
-    async function selectImu(slot) {
+    async function loadKnownImus() {
+      mergeImuDevices(await api('/api/imu/known'));
+      for (const slot of imuSlots) {
+        const previous = $(slot + '_device').value;
+        const fallbackDevice = defaultImuForSlot(slot);
+        const fallback = fallbackDevice ? imuKey(fallbackDevice) : '';
+        populateImuSelect(slot, previous || fallback);
+      }
+    }
+
+    async function connectSelectedImu(slot) {
       const select = $(slot + '_device');
       const address = select.value;
-      if (!address) {
-        await api('/api/imu/stop', {method:'POST', body: JSON.stringify({slot})});
-        await refreshStatus();
-        return;
+      const option = select.selectedOptions[0];
+      if (!address || !option) {
+        throw new Error(`No IMU selected for ${slot}`);
       }
-      const name = select.selectedOptions[0]?.dataset?.name || select.selectedOptions[0]?.textContent || 'WT IMU';
-      updateImuPanel(slot, {connection_state: 'connecting', selected_name: name, selected_address: address});
-      await api('/api/imu/select', {method:'POST', body: JSON.stringify({slot, name, address})});
+      const name = option.dataset?.name || option.textContent || 'WT IMU';
+      const payload = {
+        slot,
+        name,
+        address: option.dataset?.address || '',
+        transport: option.dataset?.transport || 'ble',
+        adapter_port: option.dataset?.adapterPort || '',
+        adapter_device_index: option.dataset?.adapterDeviceIndex || '',
+        adapter_passive: option.dataset?.adapterPassive === '1',
+      };
+      updateImuPanel(slot, {connection_state: 'connecting', selected_name: name, selected_address: payload.address});
+      await api('/api/imu/select', {method:'POST', body: JSON.stringify(payload)});
       await refreshStatus();
+    }
+
+    async function disconnectImu(slot) {
+      await api('/api/imu/stop', {method:'POST', body: JSON.stringify({slot})});
+      await refreshStatus();
+    }
+
+    async function connectAllImus() {
+      for (const slot of imuSlots) {
+        if (!$(slot + '_device').value) continue;
+        await connectSelectedImu(slot);
+        await new Promise(resolve => setTimeout(resolve, 6500));
+      }
+      await refreshStatus();
+    }
+
+    async function disconnectAllImus() {
+      for (const slot of imuSlots) await disconnectImu(slot);
     }
 
     function formatVec(values, digits = 3) {
       if (!Array.isArray(values)) return '--';
       return values.map(value => Number(value).toFixed(digits)).join(', ');
+    }
+
+    function formatUnixNs(timestampNs) {
+      const value = Number(timestampNs);
+      if (!Number.isFinite(value) || value <= 0) return '--';
+      return new Date(value / 1e6).toISOString();
     }
 
     function metric(label, value) {
@@ -1281,18 +1845,24 @@ INDEX_HTML = r"""<!doctype html>
       const sample = status.last_sample || {};
       const state = status.connection_state || 'idle';
       const name = status.selected_name || '未选择';
+      const target = status.adapter_port ? `${status.adapter_port} -> ${status.selected_address || ''}` : (status.selected_address || '');
       const age = status.last_sample_age_s == null ? '无数据' : `${status.last_sample_age_s}s 前`;
       const recording = status.recording ? 'recording' : 'not recording';
+      const count = status.sample_count ?? 0;
       const error = status.last_error ? `<div class="status" style="color: var(--bad);">${escapeHtml(status.last_error.split('\n')[0])}</div>` : '';
+      const unixNs = sample.timestamp_unix_ns ? String(sample.timestamp_unix_ns) : '--';
+      const monotonicNs = sample.timestamp_monotonic_ns ? String(sample.timestamp_monotonic_ns) : '--';
       $(slot + '_status').innerHTML = `
-        <div>${escapeHtml(name)} | ${escapeHtml(state)} | sample ${escapeHtml(age)} | ${escapeHtml(recording)}</div>
+        <div>${escapeHtml(name)} | ${escapeHtml(state)} | ${escapeHtml(target)} | samples ${count} | latest ${escapeHtml(age)} | ${escapeHtml(recording)}</div>
         <div class="imu-data">
           ${metric('accel_mps2 XYZ', formatVec(sample.accel_mps2))}
           ${metric('gyro_radps XYZ', formatVec(sample.gyro_radps))}
           ${metric('euler_deg RPY', formatVec(sample.euler_deg))}
           ${metric('quat_wxyz', formatVec(sample.quat_wxyz))}
           ${metric('mag XYZ', formatVec(sample.mag))}
-          ${metric('timestamp', sample.timestamp_unix_ns ? String(sample.timestamp_unix_ns) : '--')}
+          ${metric('unix time', formatUnixNs(sample.timestamp_unix_ns))}
+          ${metric('timestamp_unix_ns', unixNs)}
+          ${metric('timestamp_monotonic_ns', monotonicNs)}
         </div>
         ${error}`;
     }
@@ -1301,12 +1871,16 @@ INDEX_HTML = r"""<!doctype html>
       const data = await api('/api/status');
       const record = data.recording?.message || 'idle';
       const camera = data.camera?.message || 'idle';
+      const visualization = data.visualization?.message || 'idle';
       recordingActive = Boolean(data.recording?.active);
+      visualizationActive = Boolean(data.visualization?.active);
       updateRecordButton();
+      updateVisualizeButton();
       for (const slot of imuSlots) updateImuPanel(slot, data.imus?.[slot]);
       const cameraError = data.camera?.error ? ` <span style="color: var(--bad);">${escapeHtml(data.camera.error.split('\n')[0])}</span>` : '';
+      const visualizationError = data.visualization?.error ? ` <span style="color: var(--bad);">${escapeHtml(data.visualization.error.split('\n')[0])}</span>` : '';
       const summary = data.session_summary ? sessionSummaryText(data.session_summary) : '';
-      $('status').innerHTML = `Record: <b>${record}</b> Camera: <b>${camera}</b>${cameraError}${summary}`;
+      $('status').innerHTML = `Record: <b>${record}</b> Camera: <b>${camera}</b>${cameraError} RViz: <b>${visualization}</b>${visualizationError}${summary}`;
       $('log').textContent = JSON.stringify(data, null, 2);
     }
 
@@ -1327,6 +1901,13 @@ INDEX_HTML = r"""<!doctype html>
       button.classList.toggle('stop', recordingActive);
     }
 
+    function updateVisualizeButton() {
+      const button = $('visualizeToggle');
+      button.textContent = visualizationActive ? '停止 RViz 可视化' : '启动 RViz 可视化';
+      button.classList.toggle('primary', !visualizationActive);
+      button.classList.toggle('stop', visualizationActive);
+    }
+
     async function toggleRecord() {
       if (recordingActive) {
         await api('/api/record/stop', {method:'POST', body: '{}'});
@@ -1342,31 +1923,42 @@ INDEX_HTML = r"""<!doctype html>
       await refreshStatus();
     }
 
+    async function toggleVisualization() {
+      if (visualizationActive) {
+        await api('/api/visualization/stop', {method:'POST', body: '{}'});
+      } else {
+        await api('/api/visualization/start', {method:'POST', body: JSON.stringify(recordPayload())});
+      }
+      await refreshStatus();
+    }
+
     $('refreshCameras').onclick = () => runAction(() => loadCameras(false));
     $('assignCameras').onclick = () => runAction(() => loadCameras(true));
     $('recordToggle').onclick = () => runAction(toggleRecord);
+    $('visualizeToggle').onclick = () => runAction(toggleVisualization);
     cameraLayout.onchange = applyCameraLayout;
     $('scanImu').onclick = () => runAction(async () => {
-      imuDevices = await api('/api/imu/scan?timeout_s=6');
+      mergeImuDevices(await api('/api/imu/scan?timeout_s=20'));
       for (const slot of imuSlots) {
         const previous = $(slot + '_device').value;
-        populateImuSelect(slot, previous);
-      }
-      if (imuDevices[0] && !$('head_imu_device').value) $('head_imu_device').value = imuDevices[0].address;
-      if (imuDevices[1] && !$('wrist_imu_device').value) $('wrist_imu_device').value = imuDevices[1].address;
-      for (const slot of imuSlots) {
-        if ($(slot + '_device').value) await selectImu(slot);
+        const fallbackDevice = defaultImuForSlot(slot);
+        const fallback = fallbackDevice ? imuKey(fallbackDevice) : '';
+        populateImuSelect(slot, previous || fallback);
       }
       $('log').textContent = JSON.stringify(imuDevices, null, 2);
     });
     for (const slot of imuSlots) {
       populateImuSelect(slot);
-      $(slot + '_device').onchange = () => runAction(() => selectImu(slot));
+      $(slot + '_connect').onclick = () => runAction(() => connectSelectedImu(slot));
+      $(slot + '_disconnect').onclick = () => runAction(() => disconnectImu(slot));
     }
+    $('connectAllImu').onclick = () => runAction(connectAllImus);
+    $('disconnectAllImu').onclick = () => runAction(disconnectAllImus);
 
     runAction(async () => {
       applyCameraLayout();
       await loadProfile();
+      await loadKnownImus();
       await loadCameras(true);
       await refreshStatus();
     });
@@ -1381,7 +1973,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local 3D Motion capture dashboard.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--head-imu-adapter-port", default=None, help="Override the default head_imu adapter port.")
+    parser.add_argument("--wrist-imu-adapter-port", default=None, help="Override the default wrist_imu adapter port.")
     args = parser.parse_args()
+
+    _apply_serial_adapter_defaults(
+        {
+            "head_imu": args.head_imu_adapter_port,
+            "wrist_imu": args.wrist_imu_adapter_port,
+        }
+    )
 
     server = DashboardServer((args.host, args.port), CaptureJobs())
     url = f"http://{args.host}:{args.port}/"
@@ -1392,6 +1993,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nStopping dashboard...")
     finally:
+        server.jobs.shutdown()
+        server.stop_previews()
         server.server_close()
 
 

@@ -1,11 +1,20 @@
 # Live capture configuration placeholder.
 
 imu:
+  head:
+    sensor_id: head_imu
+    transport: serial_adapter
+    adapter_port: /dev/ttyACM1
+    address: C4:65:91:2C:E2:20
+    output: data/raw/head_imu.jsonl
+    timestamp_source: reconstructed_200hz_from_host_receive
   wrist:
     sensor_id: wrist_imu
-    address: null
+    transport: serial_adapter
+    adapter_port: /dev/ttyACM0
+    address: C5:64:B9:44:66:D6
     output: data/raw/wrist_imu.jsonl
-    timestamp_source: host_receive
+    timestamp_source: reconstructed_200hz_from_host_receive
 
 cameras:
   format: MJPG
@@ -31,6 +40,8 @@ cameras:
 
 sync:
   prototype_clock: host_monotonic
+  imu_serial_timestamp_mode: reconstructed_rate
+  imu_nominal_sample_rate_hz: 200
   max_camera_group_skew_us_warn: 5000
   timestamp_fields:
     - timestamp_monotonic_ns

@@ -1,0 +1,170 @@
+{
+  "session_dir": "data/raw/session_20260630_141240",
+  "started_unix_ns": 1782799960431808568,
+  "camera": {
+    "sources": {
+      "C0": "/dev/video4",
+      "C1": "/dev/video0",
+      "C2": "/dev/video6",
+      "C3": "/dev/video2"
+    },
+    "tile_configs": {
+      "C0": {
+        "source": "/dev/video4",
+        "format": "MJPG",
+        "size": "1600x1200",
+        "fps": "23",
+        "device_fps": 23
+      },
+      "C1": {
+        "source": "/dev/video0",
+        "format": "MJPG",
+        "size": "1600x1200",
+        "fps": "25",
+        "device_fps": 25
+      },
+      "C2": {
+        "source": "/dev/video6",
+        "format": "MJPG",
+        "size": "1600x1200",
+        "fps": "25",
+        "device_fps": 25
+      },
+      "C3": {
+        "source": "/dev/video2",
+        "format": "MJPG",
+        "size": "1600x1200",
+        "fps": "23",
+        "device_fps": 23
+      }
+    },
+    "width": 1600,
+    "height": 1200,
+    "fps": 23.0
+  },
+  "imus": {
+    "head_imu": {
+      "slot": "head_imu",
+      "selected_name": "USB adapter ACM1",
+      "selected_address": "",
+      "transport": "serial_adapter",
+      "adapter_port": "/dev/ttyACM1",
+      "adapter_device_index": null,
+      "adapter_passive": true,
+      "connection_state": "connected",
+      "connection_monotonic_ns": 94248875302830,
+      "last_sample_monotonic_ns": 94248859472013,
+      "last_error": null,
+      "recording": true,
+      "output": "data/raw/session_20260630_141240/imus/head_imu.jsonl",
+      "last_sample": {
+        "sensor_id": "head_imu",
+        "timestamp_unix_ns": 1782799960412034017,
+        "timestamp_monotonic_ns": 94248859472013,
+        "timestamp_source": "reconstructed_200hz_from_host_receive",
+        "accel_mps2": [
+          -9.495403784179686,
+          -0.5027823486328125,
+          2.2744915771484373
+        ],
+        "gyro_radps": [
+          -0.0010652644360316954,
+          -0.006391586616190171,
+          0.0010652644360316954
+        ],
+        "euler_deg": [
+          -11.8597412109375,
+          75.8441162109375,
+          45.3021240234375
+        ],
+        "quat_wxyz": [
+          0.6996535527139839,
+          -0.3106333738663058,
+          0.5327632841273873,
+          0.3607701433058692
+        ],
+        "mag": null,
+        "host_receive_unix_ns": 1782799960425111525,
+        "host_receive_monotonic_ns": 94248872549521,
+        "timestamp_reconstruction": {
+          "mode": "reconstructed_rate",
+          "sample_rate_hz": 200.0,
+          "sample_period_ns": 5000000,
+          "batch_size": 13,
+          "batch_index": 12,
+          "host_receive_monotonic_ns": 94248872549521,
+          "reason": "continuous_rate"
+        }
+      },
+      "sample_count": 57231,
+      "last_sample_age_s": 0.02,
+      "connection_age_s": 0.0
+    },
+    "wrist_imu": {
+      "slot": "wrist_imu",
+      "selected_name": "USB adapter ACM0",
+      "selected_address": "",
+      "transport": "serial_adapter",
+      "adapter_port": "/dev/ttyACM0",
+      "adapter_device_index": null,
+      "adapter_passive": true,
+      "connection_state": "connected",
+      "connection_monotonic_ns": 94248858459757,
+      "last_sample_monotonic_ns": 94248863078613,
+      "last_error": null,
+      "recording": true,
+      "output": "data/raw/session_20260630_141240/imus/wrist_imu.jsonl",
+      "last_sample": {
+        "sensor_id": "wrist_imu",
+        "timestamp_unix_ns": 1782799960415640401,
+        "timestamp_monotonic_ns": 94248863078613,
+        "timestamp_source": "reconstructed_200hz_from_host_receive",
+        "accel_mps2": [
+          -1.446097802734375,
+          -1.235408056640625,
+          9.749189160156249
+        ],
+        "gyro_radps": [
+          0.023435817592697295,
+          -0.004261057744126781,
+          -0.006391586616190171
+        ],
+        "euler_deg": [
+          -5.7843017578125,
+          7.9705810546875,
+          -81.67236328125
+        ],
+        "quat_wxyz": [
+          0.7560844985762077,
+          0.007306401562767496,
+          0.0854291739140172,
+          -0.6488333405068953
+        ],
+        "mag": null,
+        "host_receive_unix_ns": 1782799960408763577,
+        "host_receive_monotonic_ns": 94248856201789,
+        "timestamp_reconstruction": {
+          "mode": "reconstructed_rate",
+          "sample_rate_hz": 200.0,
+          "sample_period_ns": 5000000,
+          "batch_size": 13,
+          "batch_index": 12,
+          "host_receive_monotonic_ns": 94248856201789,
+          "reason": "continuous_rate"
+        }
+      },
+      "sample_count": 53293,
+      "last_sample_age_s": 0.02,
+      "connection_age_s": 0.02
+    }
+  },
+  "example_excerpt": {
+    "source_session": "session_20260630_141240",
+    "group_id_range": [
+      28,
+      79
+    ],
+    "frame_records": 208,
+    "purpose": "Small reproducible AprilGrid world-anchor example; not a full capture session."
+  }
+}

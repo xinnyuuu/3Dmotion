@@ -1,0 +1,40 @@
+%YAML:1.0
+
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 0.00038201490199235826
+  accelerometer_random_walk: 3.8201490199235826e-05
+  gyroscope_noise_density: 6.606039558454192e-06
+  gyroscope_random_walk: 6.606039558454193e-07
+  accel_bias_mps2: [-0.46155064215184016, -0.09689502460956959, 9.859141468546635]
+  gyro_bias_radps: [-0.004122282084198011, 0.0015591975944571606, 0.0015028134807532718]
+  source_imu_id: head_imu
+  source_calibration: ../VimasCalibration/imu_calibration/static/head_imu_exp01/head_imu_noise.yaml
+  rostopic: /imu0
+  time_offset: 0.0
+  update_rate: 100.0
+  model: kalibr
+  Tw:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  R_IMUtoGYRO:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Ta:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  R_IMUtoACC:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Tg:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]

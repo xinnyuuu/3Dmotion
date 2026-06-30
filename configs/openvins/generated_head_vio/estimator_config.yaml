@@ -1,0 +1,55 @@
+%YAML:1.0
+
+verbosity: "INFO"
+use_fej: true
+integration: "rk4"
+use_stereo: false
+max_cameras: 4
+
+calib_cam_extrinsics: true
+calib_cam_intrinsics: true
+calib_cam_timeoffset: true
+calib_imu_intrinsics: false
+calib_imu_g_sensitivity: false
+
+max_clones: 11
+max_slam: 50
+max_slam_in_update: 25
+max_msckf_in_update: 40
+dt_slam_delay: 1
+gravity_mag: 9.81
+
+feat_rep_msckf: "GLOBAL_3D"
+feat_rep_slam: "ANCHORED_MSCKF_INVERSE_DEPTH"
+feat_rep_aruco: "ANCHORED_MSCKF_INVERSE_DEPTH"
+
+try_zupt: false
+init_window_time: 2.0
+init_imu_thresh: 0.5
+init_max_disparity: 10.0
+init_max_features: 50
+init_dyn_use: false
+
+record_timing_information: false
+save_total_state: false
+filepath_est: "/tmp/ov_estimate.txt"
+filepath_std: "/tmp/ov_estimate_std.txt"
+filepath_gt: "/tmp/ov_groundtruth.txt"
+
+use_klt: true
+num_pts: 200
+fast_threshold: 10
+grid_x: 5
+grid_y: 5
+min_px_dist: 10
+knn_ratio: 0.70
+track_frequency: 15.0
+downsample_cameras: false
+num_opencv_threads: 4
+histogram_method: "HISTOGRAM"
+
+use_aruco: false
+use_mask: false
+
+relative_config_imu: "kalibr_imu_chain.yaml"
+relative_config_imucam: "kalibr_imucam_chain.yaml"

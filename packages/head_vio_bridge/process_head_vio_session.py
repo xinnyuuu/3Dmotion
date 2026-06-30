@@ -16,12 +16,21 @@ def process_head_vio_session(
     output_dir: Path | None = None,
     cameras_path: Path = Path("configs/cameras.yaml"),
     template_config_dir: Path | None = Path("open_vins/config/euroc_mav"),
+    kalibr_imucam_path: Path | None = None,
     camera_id: str | None = None,
     camera_ids: list[str] | None = None,
     imu_slot: str = "head_imu",
     write_rosbag: bool = True,
     overwrite_rosbag: bool = True,
     fail_on_not_ready: bool = True,
+    init_imu_thresh: float = 0.5,
+    init_max_disparity: float = 10.0,
+    init_dyn_use: bool = False,
+    timeshift_cam_imu: float | None = None,
+    calib_cam_timeoffset: bool = False,
+    calib_cam_extrinsics: bool = False,
+    imu_time_mode: str = "raw",
+    imu_rate_hz: float = 200.0,
     max_duration_s: float | None = None,
     start_offset_s: float = 0.0,
     image_stride: int = 1,
@@ -37,6 +46,7 @@ def process_head_vio_session(
     output_dir = output_dir or Path("data/processed") / session_dir.name / "openvins_head"
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    export_window = start_offset_s > 0 or max_duration_s is not None
 
     p3_summary = prepare_p3_head_vio(
         session_dir=session_dir,
@@ -44,10 +54,22 @@ def process_head_vio_session(
         config_dir=output_dir / "config",
         cameras_path=cameras_path,
         template_config_dir=template_config_dir,
+        kalibr_imucam_path=kalibr_imucam_path,
         camera_id=camera_id,
         camera_ids=selected_camera_ids,
         imu_slot=imu_slot,
         fail_on_not_ready=fail_on_not_ready,
+        init_imu_thresh=init_imu_thresh,
+        init_max_disparity=init_max_disparity,
+        init_dyn_use=init_dyn_use,
+        timeshift_cam_imu=timeshift_cam_imu,
+        calib_cam_timeoffset=calib_cam_timeoffset,
+        calib_cam_extrinsics=calib_cam_extrinsics,
+        imu_time_mode=imu_time_mode,
+        imu_rate_hz=imu_rate_hz,
+        start_offset_s=start_offset_s,
+        max_duration_s=max_duration_s,
+        export_window=export_window,
     )
 
     rosbag_summary = _maybe_write_rosbag2(
@@ -56,8 +78,8 @@ def process_head_vio_session(
         enabled=write_rosbag and bool(p3_summary.get("ready_for_p3a")),
         overwrite=overwrite_rosbag,
         skipped_reason=None if write_rosbag else "Disabled by --no-rosbag2.",
-        max_duration_s=max_duration_s,
-        start_offset_s=start_offset_s,
+        max_duration_s=None if export_window else max_duration_s,
+        start_offset_s=0.0 if export_window else start_offset_s,
         image_stride=image_stride,
     )
 
@@ -68,6 +90,15 @@ def process_head_vio_session(
         "ok": bool(p3_summary.get("ready_for_p3a")) and (not write_rosbag or rosbag_summary.get("ok", False)),
         "camera_ids": selected_camera_ids,
         "imu_slot": imu_slot,
+        "init_imu_thresh": init_imu_thresh,
+        "init_max_disparity": init_max_disparity,
+        "init_dyn_use": init_dyn_use,
+        "timeshift_cam_imu": timeshift_cam_imu,
+        "calib_cam_timeoffset": calib_cam_timeoffset,
+        "calib_cam_extrinsics": calib_cam_extrinsics,
+        "imu_time_mode": imu_time_mode,
+        "imu_rate_hz": imu_rate_hz,
+        "export_windowed_before_time_sync": export_window,
         "steps": {
             "p3_head_vio": p3_summary,
             "rosbag2": rosbag_summary,
@@ -162,6 +193,9 @@ def _next_commands(output_dir: Path, *, camera_count: int) -> dict:
             "source /opt/ros/humble/setup.bash\n"
             f"ros2 bag play {bag_dir}"
         ),
+        "replay_without_rosbag2": (
+            f"scripts/session_replay_publisher_ros2.bash --prepared-dir {output_dir}"
+        ),
         "launch_rviz": (
             "cd ros2_ws\n"
             "source /opt/ros/humble/setup.bash\n"
@@ -179,6 +213,7 @@ def main() -> None:
     parser.add_argument("--output-dir", help="Default: data/processed/<session_name>/openvins_head.")
     parser.add_argument("--cameras", default="configs/cameras.yaml")
     parser.add_argument("--template-config-dir", default="open_vins/config/euroc_mav")
+    parser.add_argument("--kalibr-imucam", help="Optional Kalibr camchain-imucam YAML with T_cam_imu/T_imu_cam and timeshift_cam_imu.")
     parser.add_argument(
         "--camera-id",
         action="append",
@@ -189,6 +224,14 @@ def main() -> None:
     parser.add_argument("--no-rosbag2", action="store_true", help="Only write JSONL/config; skip rosbag2 export.")
     parser.add_argument("--keep-existing-rosbag2", action="store_true", help="Do not delete an existing rosbag2 directory before export.")
     parser.add_argument("--allow-not-ready", action="store_true", help="Write intermediate outputs even if P3a readiness checks fail.")
+    parser.add_argument("--init-imu-thresh", type=float, default=0.5, help="OpenVINS static initializer IMU excitation threshold. Default: 0.5.")
+    parser.add_argument("--init-max-disparity", type=float, default=10.0, help="OpenVINS static initializer max image disparity. Default: 10.")
+    parser.add_argument("--init-dyn-use", action="store_true", help="Use OpenVINS dynamic initializer when the static init window is moving.")
+    parser.add_argument("--timeshift-cam-imu", type=float, help="Static camera-to-IMU offset in seconds. OpenVINS uses imu_time = camera_time + offset.")
+    parser.add_argument("--calib-cam-timeoffset", action="store_true", help="Let OpenVINS estimate camera-IMU time offset online.")
+    parser.add_argument("--calib-cam-extrinsics", action="store_true", help="Let OpenVINS estimate camera-IMU extrinsics online.")
+    parser.add_argument("--imu-time-mode", choices=["raw", "resample-rate", "reconstruct-rate"], default="raw")
+    parser.add_argument("--imu-rate-hz", type=float, default=200.0)
     parser.add_argument("--max-duration-s", type=float, help="Optional debug rosbag2 export duration in seconds.")
     parser.add_argument("--start-offset-s", type=float, default=0.0, help="Skip this many seconds from the beginning before writing rosbag2.")
     parser.add_argument("--image-stride", type=int, default=1, help="Write every Nth image to rosbag2 while keeping all IMU samples.")
@@ -199,11 +242,20 @@ def main() -> None:
         output_dir=Path(args.output_dir) if args.output_dir else None,
         cameras_path=Path(args.cameras),
         template_config_dir=Path(args.template_config_dir) if args.template_config_dir else None,
+        kalibr_imucam_path=Path(args.kalibr_imucam) if args.kalibr_imucam else None,
         camera_ids=args.camera_ids,
         imu_slot=args.imu_slot,
         write_rosbag=not args.no_rosbag2,
         overwrite_rosbag=not args.keep_existing_rosbag2,
         fail_on_not_ready=not args.allow_not_ready,
+        init_imu_thresh=args.init_imu_thresh,
+        init_max_disparity=args.init_max_disparity,
+        init_dyn_use=args.init_dyn_use,
+        timeshift_cam_imu=args.timeshift_cam_imu,
+        calib_cam_timeoffset=args.calib_cam_timeoffset,
+        calib_cam_extrinsics=args.calib_cam_extrinsics,
+        imu_time_mode=args.imu_time_mode,
+        imu_rate_hz=args.imu_rate_hz,
         max_duration_s=args.max_duration_s,
         start_offset_s=args.start_offset_s,
         image_stride=args.image_stride,

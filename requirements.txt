@@ -1,5 +1,7 @@
 bleak
+pyserial
 opencv-contrib-python
 numpy
 pyyaml
-
+mediapipe
+pytest

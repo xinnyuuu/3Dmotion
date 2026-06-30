@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -25,6 +26,8 @@ def fuse_motion_session(
     output_dir: Path | None = None,
     max_head_dt_ms: float = 50.0,
     max_wrist_imu_dt_ms: float = 20.0,
+    use_wrist_imu_orientation: bool = True,
+    visual_correction_alpha: float = 0.35,
 ) -> dict:
     session_dir = session_dir.resolve()
     output_root = output_root.resolve()
@@ -52,7 +55,8 @@ def fuse_motion_session(
         [_pose_record(record, "T_H_B") for record in _read_jsonl(wrist_visual_path)],
         key=lambda record: record["timestamp_monotonic_ns"],
     )
-    wrist_imu_records = list(_read_jsonl(wrist_imu_path)) if wrist_imu_path.exists() else []
+    wrist_imu_available = wrist_imu_path.exists()
+    wrist_imu_records = list(_read_jsonl(wrist_imu_path)) if wrist_imu_available else []
 
     if not head_records:
         raise RuntimeError(f"No head pose records found in {head_pose_path}")
@@ -73,6 +77,11 @@ def fuse_motion_session(
     wrist_imu_dt_values_ms = []
     skipped = {"head_time_gap": 0}
     written = 0
+    previous_fused_T_W_B: RigidTransform | None = None
+    previous_timestamp_ns: int | None = None
+    imu_propagated_frames = 0
+    imu_fallback_frames = 0
+    alpha = min(max(float(visual_correction_alpha), 0.0), 1.0)
 
     with wrist_fused_path.open("w", encoding="utf-8") as wrist_file, motion_frame_path.open("w", encoding="utf-8") as motion_file:
         for wrist_visual in wrist_visual_records:
@@ -84,7 +93,7 @@ def fuse_motion_session(
 
             T_W_H = head_record["transform"]
             T_H_B = wrist_visual["transform"]
-            T_W_B = T_W_H @ T_H_B
+            visual_T_W_B = T_W_H @ T_H_B
             timestamp_unix_ns = int(wrist_visual.get("timestamp_unix_ns") or head_record.get("timestamp_unix_ns") or 0)
             timestamp_monotonic_ns = int(wrist_visual["timestamp_monotonic_ns"])
             head_dt_ms = float(head_dt_ns) / 1e6
@@ -92,18 +101,59 @@ def fuse_motion_session(
             head_dt_values_ms.append(abs(head_dt_ms))
             if imu_dt_ms is not None:
                 wrist_imu_dt_values_ms.append(abs(imu_dt_ms))
+            wrist_imu_ok = imu_dt_ms is not None and abs(imu_dt_ms) <= max_wrist_imu_dt_ms
+
+            fusion_method = "visual_only"
+            if (
+                use_wrist_imu_orientation
+                and previous_fused_T_W_B is not None
+                and previous_timestamp_ns is not None
+                and timestamp_monotonic_ns > previous_timestamp_ns
+                and wrist_imu_records
+            ):
+                delta_rotation, used_imu = _integrate_wrist_gyro(
+                    wrist_imu_records,
+                    wrist_imu_times,
+                    previous_timestamp_ns,
+                    timestamp_monotonic_ns,
+                )
+                if used_imu:
+                    predicted_rotation = previous_fused_T_W_B.rotation @ delta_rotation
+                    fused_rotation = _slerp_rotation(predicted_rotation, visual_T_W_B.rotation, alpha)
+                    T_W_B = RigidTransform(rotation=fused_rotation, translation=visual_T_W_B.translation)
+                    fusion_method = "wrist_gyro_propagation_with_visual_correction"
+                    imu_propagated_frames += 1
+                else:
+                    T_W_B = visual_T_W_B
+                    fusion_method = "visual_only_no_imu_interval"
+                    imu_fallback_frames += 1
+            else:
+                T_W_B = visual_T_W_B
+                if use_wrist_imu_orientation and previous_fused_T_W_B is not None:
+                    fusion_method = "visual_only_no_imu"
+                    imu_fallback_frames += 1
+
+            fused_T_H_B = T_W_H.inverse() @ T_W_B
 
             wrist_payload = {
                 "timestamp_unix_ns": timestamp_unix_ns,
                 "timestamp_monotonic_ns": timestamp_monotonic_ns,
-                "timestamp_source": "wrist_visual",
+                "timestamp_source": "wrist_visual_with_optional_wrist_imu",
                 "tracking_state": 1,
-                "T_H_B": transform_to_dict(T_H_B),
+                "T_H_B": transform_to_dict(fused_T_H_B),
                 "T_W_B": transform_to_dict(T_W_B),
+                "visual_T_H_B": transform_to_dict(T_H_B),
+                "visual_T_W_B": transform_to_dict(visual_T_W_B),
                 "alignment": {
                     "head_dt_ms": head_dt_ms,
                     "wrist_imu_dt_ms": imu_dt_ms,
-                    "wrist_imu_ok": imu_dt_ms is not None and abs(imu_dt_ms) <= max_wrist_imu_dt_ms,
+                    "wrist_imu_ok": wrist_imu_ok,
+                },
+                "fusion": {
+                    "method": fusion_method,
+                    "visual_correction_alpha": alpha,
+                    "uses_wrist_gyro": fusion_method == "wrist_gyro_propagation_with_visual_correction",
+                    "translation_source": "wrist_visual",
                 },
                 "wrist_imu": _imu_payload(imu_record),
             }
@@ -119,11 +169,14 @@ def fuse_motion_session(
                 "relative": {
                     "frame_id": "head",
                     "child_frame_id": "wrist",
-                    "T_H_B": transform_to_dict(T_H_B),
+                    "T_H_B": transform_to_dict(fused_T_H_B),
+                    "visual_T_H_B": transform_to_dict(T_H_B),
                 },
             }
             motion_file.write(json.dumps(motion_payload, separators=(",", ":")) + "\n")
             written += 1
+            previous_fused_T_W_B = T_W_B
+            previous_timestamp_ns = timestamp_monotonic_ns
 
     summary = {
         "session_dir": str(session_dir),
@@ -152,7 +205,22 @@ def fuse_motion_session(
             "head_threshold_ms": max_head_dt_ms,
             "wrist_imu_threshold_ms": max_wrist_imu_dt_ms,
         },
+        "wrist_imu_fusion": {
+            "enabled": use_wrist_imu_orientation and wrist_imu_available,
+            "requested": use_wrist_imu_orientation,
+            "wrist_imu_available": wrist_imu_available,
+            "method": "gyro_propagation_visual_correction",
+            "visual_correction_alpha": alpha,
+            "imu_propagated_frames": imu_propagated_frames,
+            "imu_fallback_frames": imu_fallback_frames,
+            "note": (
+                "Gyro is integrated between AprilTag visual poses for orientation continuity when wrist_imu exists; "
+                "AprilTag remains the absolute pose correction and translation source."
+            ),
+        },
     }
+    if not wrist_imu_available:
+        summary["wrist_imu_fusion"]["fallback_reason"] = f"Missing wrist IMU log: {wrist_imu_path}"
     (output_dir / "fusion_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return summary
 
@@ -210,6 +278,88 @@ def _imu_payload(record: dict | None) -> dict | None:
     }
 
 
+def _integrate_wrist_gyro(records: list[dict], timestamps: list[int], start_ns: int, end_ns: int) -> tuple[np.ndarray, bool]:
+    if not records or end_ns <= start_ns:
+        return np.eye(3, dtype=np.float64), False
+
+    boundaries = [int(start_ns)]
+    start_index = bisect.bisect_right(timestamps, int(start_ns))
+    end_index = bisect.bisect_left(timestamps, int(end_ns))
+    boundaries.extend(timestamps[start_index:end_index])
+    boundaries.append(int(end_ns))
+
+    rotation = np.eye(3, dtype=np.float64)
+    used_imu = False
+    for segment_start, segment_end in zip(boundaries[:-1], boundaries[1:]):
+        if segment_end <= segment_start:
+            continue
+        imu_index = bisect.bisect_right(timestamps, segment_start) - 1
+        if imu_index < 0:
+            imu_index = 0
+        gyro = records[imu_index].get("gyro_radps")
+        if gyro is None or len(gyro) != 3:
+            continue
+        dt_s = (segment_end - segment_start) / 1_000_000_000.0
+        rotation = rotation @ _rotation_from_rotvec(np.asarray(gyro, dtype=np.float64) * dt_s)
+        used_imu = True
+    return rotation, used_imu
+
+
+def _rotation_from_rotvec(rotvec: np.ndarray) -> np.ndarray:
+    angle = float(np.linalg.norm(rotvec))
+    if angle < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    axis = rotvec / angle
+    x, y, z = axis
+    skew = np.array(
+        [
+            [0.0, -z, y],
+            [z, 0.0, -x],
+            [-y, x, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    return np.eye(3, dtype=np.float64) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
+
+
+def _slerp_rotation(rotation_a: np.ndarray, rotation_b: np.ndarray, alpha: float) -> np.ndarray:
+    quat_a = np.asarray(_rotation_matrix_to_quat_wxyz(rotation_a), dtype=np.float64)
+    quat_b = np.asarray(_rotation_matrix_to_quat_wxyz(rotation_b), dtype=np.float64)
+    quat = _slerp_quat(quat_a, quat_b, alpha)
+    return quat_wxyz_to_rotation_matrix(quat)
+
+
+def _slerp_quat(quat_a: np.ndarray, quat_b: np.ndarray, alpha: float) -> np.ndarray:
+    a = np.asarray(quat_a, dtype=np.float64)
+    b = np.asarray(quat_b, dtype=np.float64)
+    a /= max(np.linalg.norm(a), 1e-12)
+    b /= max(np.linalg.norm(b), 1e-12)
+    dot = float(np.dot(a, b))
+    if dot < 0.0:
+        b = -b
+        dot = -dot
+    alpha = min(max(float(alpha), 0.0), 1.0)
+    if dot > 0.9995:
+        result = a + alpha * (b - a)
+        result /= max(np.linalg.norm(result), 1e-12)
+        return result
+    theta_0 = math.acos(max(min(dot, 1.0), -1.0))
+    sin_theta_0 = math.sin(theta_0)
+    theta = theta_0 * alpha
+    scale_a = math.sin(theta_0 - theta) / sin_theta_0
+    scale_b = math.sin(theta) / sin_theta_0
+    result = scale_a * a + scale_b * b
+    result /= max(np.linalg.norm(result), 1e-12)
+    return result
+
+
+def _rotation_matrix_to_quat_wxyz(rotation: np.ndarray) -> list[float]:
+    # Local wrapper keeps this module independent from the AprilTag averaging helper internals.
+    from packages.apriltag_ring_node.geometry import rotation_matrix_to_quat_wxyz
+
+    return rotation_matrix_to_quat_wxyz(rotation)
+
+
 def _rigid_body_state(frame_id: str, child_frame_id: str, transform: RigidTransform, imu_record: dict | None = None) -> dict:
     pose = transform_to_dict(transform)
     return {
@@ -248,6 +398,13 @@ def main() -> None:
     parser.add_argument("--output-dir")
     parser.add_argument("--max-head-dt-ms", type=float, default=50.0)
     parser.add_argument("--max-wrist-imu-dt-ms", type=float, default=20.0)
+    parser.add_argument("--disable-wrist-imu-orientation", action="store_true", help="Do not use wrist gyro for orientation propagation.")
+    parser.add_argument(
+        "--visual-correction-alpha",
+        type=float,
+        default=0.35,
+        help="0 keeps gyro prediction, 1 snaps fully to AprilTag orientation. Default: 0.35.",
+    )
     args = parser.parse_args()
     summary = fuse_motion_session(
         session_dir=Path(args.session_dir),
@@ -258,6 +415,8 @@ def main() -> None:
         output_dir=Path(args.output_dir) if args.output_dir else None,
         max_head_dt_ms=args.max_head_dt_ms,
         max_wrist_imu_dt_ms=args.max_wrist_imu_dt_ms,
+        use_wrist_imu_orientation=not args.disable_wrist_imu_orientation,
+        visual_correction_alpha=args.visual_correction_alpha,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

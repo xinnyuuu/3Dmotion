@@ -32,4 +32,13 @@ tracking_state
 
 ## 当前状态
 
-还未实现。保留为 P2/P4 的工程骨架。
+完整 ESKF 还未实现。当前已在 `packages/session_tools/motion_fusion.py` 里实现一个实用的离线互补融合层：
+
+```text
+wrist gyro propagation between AprilTag visual poses
++ AprilTag visual orientation correction
++ AprilTag visual translation
+-> wrist_fused_pose.jsonl / motion_frame.jsonl
+```
+
+也就是说，`wrist_imu` 的 gyro 已经会影响 wrist orientation 的连续性；AprilTag 仍是绝对校正和位置来源。后续如果要处理长时间遮挡、bias、速度和协方差，再升级到这里规划的 ESKF 状态。

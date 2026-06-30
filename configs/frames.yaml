@@ -13,6 +13,22 @@ head_imu_frame: I_H
 wrist_imu_frame: I_B
 
 frame_conventions:
+  H:
+    origin: user_measured_headset_center
+    x: forward_toward_headset_front
+    y: user_left
+    z: up
+    handedness: right
+    measured_reference:
+      headset_width_m: 0.176
+      origin_to_side_edge_m: 0.088
+      origin_to_frontmost_outer_edge_m: 0.107
+      headset_vertical_thickness_m: 0.034
+      origin_to_top_or_bottom_edge_m: 0.017
+      notes:
+        - "With +X forward, the frontmost outer edge is at x = +0.107 m relative to H."
+        - "With +Y left, left/right outer edges are y = +/-0.088 m relative to H."
+        - "With +Z up, top/bottom outer edges are z = +/-0.017 m relative to H."
   B:
     origin: wristband_geometric_center
     x: toward_fingers_along_back_of_hand_plane
@@ -26,13 +42,13 @@ transforms:
     status: pending
   T_H_IH:
     source: head_imu_to_head_calibration
-    status: p3a_uses_identity_until_measured
+    status: measured_from_axes_and_translation
     rotation_matrix:
-      - [1.0, 0.0, 0.0]
-      - [0.0, 1.0, 0.0]
       - [0.0, 0.0, 1.0]
-    translation_m: [0.0, 0.0, 0.0]
-    note: "Temporary P3a convention is H := I_H. Replace after camera-IMU/head extrinsic calibration."
+      - [0.0, 1.0, 0.0]
+      - [-1.0, 0.0, 0.0]
+    translation_m: [0.112, 0.0, 0.0]
+    note: "IMU +X = H -Z, IMU +Y = H +Y, IMU +Z = H +X. Head IMU origin is 112 mm along H +X from H origin; Y/Z translation unchanged."
   T_B_IB:
     source: wrist_imu_to_wristband_calibration
     status: measured_from_axes_and_translation

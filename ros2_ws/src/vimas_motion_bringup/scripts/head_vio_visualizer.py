@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ from typing import Callable
 
 import rclpy
 from geometry_msgs.msg import Pose, PoseStamped, PoseWithCovarianceStamped, TransformStamped
-from nav_msgs.msg import Odometry, Path
+from nav_msgs.msg import Odometry, Path as PathMsg
 from rclpy.node import Node
 from tf2_ros import TransformBroadcaster
 
@@ -42,9 +42,9 @@ class HeadVioVisualizer(Node):
             self.output_jsonl_file = self.output_jsonl_path.open("w", encoding="utf-8")
 
         self.pose_pub = self.create_publisher(PoseStamped, output_pose_topic, 10)
-        self.path_pub = self.create_publisher(Path, output_path_topic, 10)
+        self.path_pub = self.create_publisher(PathMsg, output_path_topic, 10)
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.path = Path()
+        self.path = PathMsg()
         self.path.header.frame_id = self.fixed_frame
 
         msg_type, callback = self._subscription_for_type(self.input_type)
@@ -138,9 +138,20 @@ def main() -> None:
     node = HeadVioVisualizer()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        _shutdown_rclpy_once()
+
+
+def _shutdown_rclpy_once() -> None:
+    try:
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception as exc:
+        if "rcl_shutdown already called" not in str(exc):
+            raise
 
 
 if __name__ == "__main__":

@@ -222,7 +222,7 @@ def _pnp_points_and_distortion(
             image_points.reshape(-1, 1, 2),
             camera_matrix,
             dist_coeffs.reshape(-1, 1),
-            float(xi),
+            _omnidir_xi(xi),
             np.eye(3, dtype=np.float64),
         )
         return undistorted.reshape(-1, 2), np.zeros((4, 1), dtype=np.float64)
@@ -247,6 +247,12 @@ def _is_fisheye_distortion(distortion_model: str) -> bool:
 
 def _is_omni_distortion(distortion_model: str, xi: float | None) -> bool:
     return xi is not None and distortion_model.lower() in {"radtan", "mei", "omni", "omnidir"}
+
+
+def _omnidir_xi(xi: float | None) -> np.ndarray:
+    if xi is None:
+        raise ValueError("Omnidirectional projection requires xi.")
+    return np.asarray([float(xi)], dtype=np.float64)
 
 
 def _require_omnidir(cv2) -> None:

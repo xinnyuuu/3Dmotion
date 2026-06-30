@@ -1,0 +1,70 @@
+%YAML:1.0
+
+cam0:
+  T_imu_cam:
+    - [-0.002318810840976076, 0.994500811214779, 0.10470319770392372, 0.010656815110883126]
+    - [-0.9998965773323016, -0.0008197118025364134, -0.014358367306406696, 0.07241595215731188]
+    - [-0.01419358148701997, -0.10472566335766914, 0.9943998580444712, 0.034473026116920616]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [1, 2, 3]
+  source_camera_id: C1
+  source_camera_model: omni
+  source_projection_model: mei
+  source_xi: 1.773
+  camera_model: pinhole
+  distortion_coeffs: [0.214, -0.723, 0.0007, -0.0009]
+  distortion_model: radtan
+  intrinsics: [1628.9, 1636.4, 915.9, 625.4]
+  resolution: [1600, 1200]
+  rostopic: /cam0/image_raw
+cam1:
+  T_imu_cam:
+    - [-0.005356057255648064, 0.9973236737604669, 0.07291640698496707, 0.00934318488911693]
+    - [-0.9999687498994012, -0.004917702671066116, -0.00618994548159459, -0.07234386482527932]
+    - [-0.005814797958686244, -0.07294728204232186, 0.9973188467924066, 0.03520670559736509]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [0, 2, 3]
+  source_camera_id: C2
+  source_camera_model: omni
+  source_projection_model: mei
+  source_xi: 1.82
+  camera_model: pinhole
+  distortion_coeffs: [0.245, -0.716, 0.0011, 0.0001]
+  distortion_model: radtan
+  intrinsics: [1650.8, 1657.2, 841.6, 633.7]
+  resolution: [1600, 1200]
+  rostopic: /cam1/image_raw
+cam2:
+  T_imu_cam:
+    - [0.8400381934022237, 0.4232993945843322, 0.339342682505556, 0.00966696698603112]
+    - [-0.531580310677224, 0.517187058549447, 0.6707756105951358, 0.14292847864937755]
+    - [0.10843526606152985, -0.7438650206949573, 0.6594745059975078, -0.07162771825928599]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [0, 1, 3]
+  source_camera_id: C0
+  source_camera_model: omni
+  source_projection_model: mei
+  source_xi: 1.868
+  camera_model: pinhole
+  distortion_coeffs: [0.321, -0.929, 0.0003, 0.0006]
+  distortion_model: radtan
+  intrinsics: [1364.8, 1362.2, 795.6, 594.0]
+  resolution: [1600, 1200]
+  rostopic: /cam2/image_raw
+cam3:
+  T_imu_cam:
+    - [-0.8497187378604582, 0.3842493540107939, 0.36101315830745057, 0.010333033013968842]
+    - [-0.5223845598288619, -0.5208979594027622, -0.6751145736409834, -0.14300056598141012]
+    - [-0.07136132132492333, -0.7622452032202816, 0.643342686277256, -0.07205201345499977]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [0, 1, 2]
+  source_camera_id: C3
+  source_camera_model: omni
+  source_projection_model: mei
+  source_xi: 1.95
+  camera_model: pinhole
+  distortion_coeffs: [0.409, -1.119, 0.0007, -0.0005]
+  distortion_model: radtan
+  intrinsics: [1396.4, 1400.9, 807.3, 568.9]
+  resolution: [1600, 1200]
+  rostopic: /cam3/image_raw

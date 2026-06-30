@@ -21,7 +21,6 @@ notebooks/*
 project_tests/reports/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
-!notebooks/README.md
 
 # ROS bags and generated media
 *.db3

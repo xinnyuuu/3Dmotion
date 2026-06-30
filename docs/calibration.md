@@ -94,6 +94,20 @@ T_H_C3
 configs/frames.yaml
 ```
 
+当前 Head frame `H` 使用手量原点：
+
+```text
+H origin: 头环左右宽度 17.6 cm 的中点，也就是距左右外侧边缘各 8.8 cm
+H origin: 距头环最前端外侧边缘 10.7 cm
+H origin: 头环上下厚度 3.4 cm 的中心，也就是距上下外侧边缘各 1.7 cm
++X: 朝头环前方
++Y: 使用者左侧
++Z: 向上
+```
+
+按这个符号，头环最前端外侧边缘相对 `H` 是 `x = +0.107 m`；上边缘是
+`z = +0.017 m`；左右边缘是 `y = +/-0.088 m`。
+
 相机外参最终落在：
 
 ```text
@@ -101,6 +115,25 @@ configs/cameras.yaml
 ```
 
 每个 camera entry 的 `T_H_C` 必须是 4x4 matrix 或 `[x, y, z, yaw_deg, pitch_deg, roll_deg]`。
+
+VimasCalibration 输出 `camera_extrinsics/four_head_camera_extrinsics.yaml` 后，可以在
+`~/lxy/VimasCalibration` 里生成一个只用于人工复制的片段：
+
+```bash
+cd ~/lxy/VimasCalibration
+python scripts/export_3dmotion_camera_extrinsics.py \
+  --extrinsics camera_extrinsics/four_head_camera_extrinsics.yaml \
+  --output camera_extrinsics/3dmotion_T_H_C_snippet.yaml
+```
+
+复制前确认映射：
+
+```text
+left_side   -> C0
+left_front  -> C1
+right_front -> C2
+right_side  -> C3
+```
 
 ## Head IMU-to-Head Extrinsics
 
@@ -116,14 +149,27 @@ head_imu
 T_H_IH
 ```
 
-P3a 快速原型阶段可以先不求真实头环中心，直接令：
+当前测量值：
 
 ```text
-H := I_H
-T_W_H := T_W_IH
+t_H_IH = [0.112, 0.0, 0.0] m
+
+IMU +X = H -Z
+IMU +Y = H +Y
+IMU +Z = H +X
 ```
 
-也就是说，OpenVINS 输出的 body pose 先当作 head pose 使用。等 `C0 + head_imu` 稳定后，再测真实 `T_H_IH`，把 IMU frame 转到头环中心 frame。
+对应：
+
+```text
+R_H_IH =
+[[ 0, 0, 1],
+ [ 0, 1, 0],
+ [-1, 0, 0]]
+```
+
+也就是说，head IMU 原点在 `H +X` 方向 11.2 cm，`Y/Z` 平移保持 0。后续可以用
+Kalibr camera-IMU 标定再 refine 这个手量外参。
 
 第一版 OpenVINS 只接：
 

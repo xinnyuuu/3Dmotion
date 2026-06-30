@@ -116,15 +116,15 @@ def _next_steps(frame_records: list[dict], capture_errors: list[dict], imu_count
     elif not frame_records:
         steps.append("No camera frames found. Confirm the dashboard session path and record duration.")
     else:
-        steps.append("Camera frames exist. You can run scripts/process_apriltag_session.py on session/cameras.")
+        steps.append("Camera frames exist. Run scripts/process_world_anchor_session.py offline for the AprilGrid world-anchor MVP.")
 
     if frame_records and imu_counts.get("head_imu", 0) > 0:
-        steps.append("C0 + head_imu data exists. You can run scripts/prepare_openvins_session.py.")
+        steps.append("Camera + head_imu data exists. OpenVINS head VIO remains available via scripts/process_head_vio_session_rosfree.py when needed.")
     elif frame_records:
         steps.append("Camera frames exist but head_imu is missing. OpenVINS prep needs a connected head IMU recording.")
 
     if imu_counts.get("wrist_imu", 0) > 0:
-        steps.append("wrist_imu exists. It can be aligned with wrist_visual_pose.jsonl after AprilTag processing.")
+        steps.append("wrist_imu exists. It can be used later for wrist smoothing; AprilGrid world-anchor visual does not require it.")
     return steps
 
 

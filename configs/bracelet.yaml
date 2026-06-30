@@ -6,12 +6,12 @@ flat_to_flat_m: 0.092
 center_offset_m: 0.046
 
 tag_order:
-  - 12
   - 19
+  - 16
+  - 17
   - 18
-  - 13
-  - 6
-  - 7
+  - 15
+  - 14
 
 # Fallback signs mirror the current AprilTag prototype convention:
 # local -Z points from a visible tag face into the bracelet body.

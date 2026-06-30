@@ -8,11 +8,13 @@ Usage:
 
 Options:
   --session-dir PATH             Required raw dashboard session.
-  --output-dir PATH              Default: data/processed/<session_name>/openvins_c0.
-  --camera-id ID                 Default: C0.
+  --output-dir PATH              Default: data/processed/<session_name>/openvins_head.
+  --camera-id ID                 Camera ID to include. Repeat for multiple cameras.
+                                  Default: C1 C2 C0 C3.
   --imu-slot SLOT                Default: head_imu.
   --cameras PATH                 Default: configs/cameras.yaml.
   --template-config-dir PATH     Default: open_vins/config/euroc_mav.
+  --init-imu-thresh VALUE        Default: 0.5.
   --max-duration-s SECONDS       Optional debug rosbag2 duration.
   --start-offset-s SECONDS       Skip this many seconds before rosbag2 export.
   --image-stride N               Write every Nth image while keeping all IMU samples.
@@ -28,10 +30,11 @@ EOF
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 session_dir=""
 output_dir=""
-camera_id="C0"
+camera_ids=()
 imu_slot="head_imu"
 cameras="configs/cameras.yaml"
 template_config_dir="open_vins/config/euroc_mav"
+init_imu_thresh="0.5"
 keep_existing_rosbag2=0
 max_duration_s=""
 start_offset_s="0.0"
@@ -48,7 +51,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --camera-id)
-      camera_id="$2"
+      camera_ids+=("$2")
       shift 2
       ;;
     --imu-slot)
@@ -61,6 +64,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --template-config-dir)
       template_config_dir="$2"
+      shift 2
+      ;;
+    --init-imu-thresh)
+      init_imu_thresh="$2"
       shift 2
       ;;
     --max-duration-s)
@@ -101,7 +108,7 @@ cd "$repo_root"
 
 if [[ -z "$output_dir" ]]; then
   session_name="$(basename "$session_dir")"
-  output_dir="data/processed/${session_name}/openvins_c0"
+  output_dir="data/processed/${session_name}/openvins_head"
 fi
 
 if [[ "$output_dir" = /* ]]; then
@@ -109,6 +116,15 @@ if [[ "$output_dir" = /* ]]; then
 else
   output_dir_abs="$(pwd)/$output_dir"
 fi
+
+if [[ "${#camera_ids[@]}" -eq 0 ]]; then
+  camera_ids=(C1 C2 C0 C3)
+fi
+
+camera_args=()
+for camera_id in "${camera_ids[@]}"; do
+  camera_args+=(--camera-id "$camera_id")
+done
 
 project_python="$repo_root/.venv/bin/python"
 if [[ ! -x "$project_python" ]]; then
@@ -120,7 +136,8 @@ fi
   --output-dir "$output_dir_abs" \
   --cameras "$cameras" \
   --template-config-dir "$template_config_dir" \
-  --camera-id "$camera_id" \
+  --init-imu-thresh "$init_imu_thresh" \
+  "${camera_args[@]}" \
   --imu-slot "$imu_slot" \
   --no-rosbag2
 
@@ -173,7 +190,7 @@ Head VIO session is ready:
 
 Next:
   source scripts/source_openvins_ros2.bash
-  ros2 launch ov_msckf subscribe.launch.py config_path:=$output_dir_abs/config/estimator_config.yaml max_cameras:=1 use_stereo:=false
+  ros2 launch ov_msckf subscribe.launch.py config_path:=$output_dir_abs/config/estimator_config.yaml max_cameras:=${#camera_ids[@]} use_stereo:=false
 
   source /opt/ros/humble/setup.bash
   ros2 bag play $output_dir_abs/rosbag2

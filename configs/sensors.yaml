@@ -23,6 +23,6 @@ imus:
     role: wrist_motion
 
 rates_hz:
-  cameras: 60
+  cameras: 25
   head_imu: 200
   wrist_imu: 200

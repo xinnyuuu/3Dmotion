@@ -2,6 +2,11 @@
 
 Rigid-body 3D motion capture prototype for head and wrist trajectories.
 
+当前仓库保留两条路线：
+
+1. **AprilGrid world-anchor MVP**：当前可复现主线。桌面 AprilGrid 定义世界坐标 `W`，四目头环相机估计头环 `T_W_H`，手环 AprilTag 估计手腕 `T_W_B`，可选 MediaPipe hand landmarks 用于 RViz 调试。
+2. **OpenVINS sparse-feature head VIO**：未来扩展路线。不依赖 AprilGrid，用 sparse visual feature tracks + `head_imu` 输出 `T_W_H`。这条路线的代码和文档保留，但由于相机模型、外参和时间同步还没收敛，暂时不是默认复现路径。
+
 目标是重建两类刚体的 6DoF motion stream：
 
 - `H`: headset / head camera rig
@@ -33,11 +38,11 @@ T_W_B = T_W_H * T_H_B
 Dashboard recording
   -> raw session: cameras + head_imu + wrist_imu
 
-AprilTag wrist visual
-  -> T_H_B
+AprilGrid world-anchor MVP
+  -> desktop tag36h11 ids 100-111 + wrist tag ring -> T_W_H and T_W_B
 
-OpenVINS P3a
-  -> C0 + head_imu -> T_W_H
+OpenVINS sparse-feature route, experimental
+  -> selected head cameras (default C1,C2,C0,C3) + head_imu -> T_W_H
 
 Future wrist ESKF
   -> wrist_imu + wrist visual pose -> smoother wrist pose
@@ -48,11 +53,59 @@ Future WAM export
 
 OpenVINS 用于快速跑通 head VIO。MOLA 暂时放在后面，用于 replay、trajectory tools、map/anchor constraints 和系统集成，不是当前 dashboard 采集的前置条件。
 
+## Reproduce The Current MVP
+
+This repository includes a small excerpt from `session_20260630_141240` under:
+
+```text
+data/examples/session_20260630_141240_excerpt/
+```
+
+It contains four-camera JPG frames plus `head_imu` / `wrist_imu` JSONL snippets. To run the current AprilGrid world-anchor pipeline from a fresh clone:
+
+```bash
+cd ~/lxy/3DMotion
+python3 -m venv --clear .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+python scripts/process_dashboard_session.py \
+  data/examples/session_20260630_141240_excerpt \
+  --hands
+```
+
+The command validates the session, runs the AprilGrid world-anchor processor, writes:
+
+```text
+data/processed/session_20260630_141240_excerpt/world_anchor/motion_frame.jsonl
+data/processed/session_20260630_141240_excerpt/world_anchor/motion_frame_filtered.jsonl
+```
+
+and prints an RViz replay command. To replay manually:
+
+```bash
+cd ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select vimas_motion_bringup --symlink-install
+source install/setup.bash
+export ROS_DOMAIN_ID=73
+export ROS_LOCALHOST_ONLY=1
+ros2 launch vimas_motion_bringup motion_replay_rviz.launch.py \
+  motion_jsonl:=$(realpath ../data/processed/session_20260630_141240_excerpt/world_anchor/motion_frame_filtered.jsonl)
+```
+
+Use `motion_frame.jsonl` instead if you want the raw unfiltered estimates.
+
 ## Start Here
 
 日常配置、采集、检查和处理流程集中在：
 
 [docs/system_workflow.md](docs/system_workflow.md)
+
+AprilGrid 主线细节：
+
+[docs/world_anchor_workflow.md](docs/world_anchor_workflow.md)
 
 文档索引：
 
@@ -117,7 +170,7 @@ python scripts/check_calibration_readiness.py
   project_tests/      real-session quality checks
   tests/              no-hardware automated tests
   ros2_ws/            ROS 2 workspace skeleton
-  data/               local datasets, ignored by git
+  data/               local datasets; raw/processed ignored, examples tracked
   notebooks/          local analysis notes, ignored by git
   open_vins/          upstream OpenVINS checkout
   mola/               upstream MOLA checkout

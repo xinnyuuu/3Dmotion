@@ -5,7 +5,7 @@ OpenVINS head VIO 适配模块。完整 P3a 操作流程见 `../../docs/system_w
 ## 职责
 
 ```text
-C0 + head_imu -> OpenVINS inputs / rosbag2 -> T_W_H
+selected head cameras + head_imu -> OpenVINS ROS-free inputs -> T_W_H
 ```
 
 当前实现覆盖：
@@ -13,14 +13,15 @@ C0 + head_imu -> OpenVINS inputs / rosbag2 -> T_W_H
 - P3a readiness check。
 - dashboard session 到 OpenVINS JSONL 中间层的转换。
 - 第一版 OpenVINS config 生成。
-- ROS2 环境下的 rosbag2 导出。
+- ROS-free CSV/JPG runner 输入准备和 `head_pose.jsonl` 输出。
+- ROS2 环境下的 rosbag2 导出，仅作为调试分支。
 
 ## Frame 约定
 
 P3a 只用一个 camera 和一个刚性固定的 head IMU：
 
 ```text
-C0 + head_imu -> T_W_H
+selected head cameras + head_imu -> T_W_H
 ```
 
 临时约定：

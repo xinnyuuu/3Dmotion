@@ -76,21 +76,25 @@ def _check_frames(path: Path) -> CalibrationCheck:
     t_b_ib = transforms.get("T_B_IB") or {}
     t_h_ih = transforms.get("T_H_IH") or {}
     wrist_ok = t_b_ib.get("rotation_matrix") is not None and t_b_ib.get("translation_m") is not None
-    head_ok = t_h_ih.get("status") not in {None, "pending"}
-    ok = wrist_ok
+    head_ok = (
+        t_h_ih.get("status") not in {None, "pending"}
+        and t_h_ih.get("rotation_matrix") is not None
+        and t_h_ih.get("translation_m") is not None
+    )
+    ok = wrist_ok and head_ok
     return CalibrationCheck(
         name="frames",
         ok=ok,
         message=(
-            "Wrist IMU frame extrinsics are present."
+            "Head and wrist IMU frame extrinsics are present."
             if ok
-            else "Frame calibration is incomplete; fill T_B_IB and later T_H_IH."
+            else "Frame calibration is incomplete; fill T_B_IB and T_H_IH."
         ),
         details={
             "path": str(path),
             "T_B_IB_present": wrist_ok,
-            "T_H_IH_not_pending": head_ok,
-            "note": "T_H_IH can use identity for P3a, but should be measured before final head-frame output.",
+            "T_H_IH_present": head_ok,
+            "note": "OpenVINS config generation uses T_IH_C = inverse(T_H_IH) * T_H_C.",
         },
     )
 

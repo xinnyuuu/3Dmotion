@@ -21,6 +21,7 @@ def main() -> None:
     parser.add_argument("--max-duration-s", type=float, help="Optional debug export duration in seconds.")
     parser.add_argument("--start-offset-s", type=float, default=0.0, help="Skip this many seconds from the beginning before writing.")
     parser.add_argument("--image-stride", type=int, default=1, help="Write every Nth image while keeping all IMU samples. Default: 1.")
+    parser.add_argument("--progress-every", type=int, default=500, help="Print export progress every N events. Use 0 to disable.")
     args = parser.parse_args()
 
     try:
@@ -31,6 +32,7 @@ def main() -> None:
             max_duration_s=args.max_duration_s,
             start_offset_s=args.start_offset_s,
             image_stride=args.image_stride,
+            progress_every=args.progress_every,
         )
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
